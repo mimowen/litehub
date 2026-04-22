@@ -1,9 +1,0 @@
-{
-  "framework": null,
-  "builds": [
-    { "src": "api/**/*.ts", "use": "@vercel/node@2" }
-  ],
-  "routes": [
-    { "src": "/(.*)", "dest": "/api/$1" }
-  ]
-}
