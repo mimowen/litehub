@@ -1,7 +1,7 @@
 // src/lib/queue.ts — 队列核心操作
 import { v4 as uuid } from "uuid";
-import { getDb } from "./db";
-import type { AgentInfo, PointerRecord } from "./types";
+import { getDb } from "./db.js";
+import type { AgentInfo, PointerRecord } from "./types.js";
 
 // ─── Agent ────────────────────────────────────────────────────────────────
 

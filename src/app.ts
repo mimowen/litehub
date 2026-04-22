@@ -6,7 +6,7 @@ import {
   registerAgent, getAgent, listAgents,
   ensureQueue, getQueueStatus, listQueues,
   produce, consume, peek, pipe,
-} from "./lib/queue";
+} from "./lib/queue.js";
 
 const app = new Hono();
 export default app;
