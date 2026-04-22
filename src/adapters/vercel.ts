@@ -37,14 +37,14 @@ async function initDb() {
       metadata TEXT DEFAULT '{}',
       status TEXT DEFAULT 'pending',
       created_at TEXT DEFAULT (datetime('now'))
-    )` },
-    { sql: `CREATE INDEX IF NOT EXISTS idx_pointers_queue_status ON pointers(queue, status)` },
-    { sql: `CREATE INDEX IF NOT EXISTS idx_pointers_queue ON pointers(queue)` },
+    )`, args: [] },
+    { sql: `CREATE INDEX IF NOT EXISTS idx_pointers_queue_status ON pointers(queue, status)`, args: [] },
+    { sql: `CREATE INDEX IF NOT EXISTS idx_pointers_queue ON pointers(queue)`, args: [] },
     { sql: `CREATE TABLE IF NOT EXISTS queues (
       name TEXT PRIMARY KEY,
       description TEXT DEFAULT '',
       created_at TEXT DEFAULT (datetime('now'))
-    )` },
+    )`, args: [] },
     { sql: `CREATE TABLE IF NOT EXISTS agents (
       agent_id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -52,7 +52,7 @@ async function initDb() {
       queues TEXT DEFAULT '[]',
       poll_interval INTEGER DEFAULT 0,
       registered_at TEXT DEFAULT (datetime('now'))
-    )` },
+    )`, args: [] },
   ], "write");
 }
 
