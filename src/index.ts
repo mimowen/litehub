@@ -10,6 +10,7 @@ import {
 } from "./lib/queue";
 
 const app = new Hono();
+export default app;
 
 app.use("*", logger());
 app.use("*", cors());
@@ -278,10 +279,12 @@ app.get("/api/peek", (c) => {
   return c.json({ ok: true, pointer });
 });
 
-// ─── Start ─────────────────────────────────────────────────────────────────
+// ─── Start (Node.js only) ──────────────────────────────────────────────────
 
-const port = Number(process.env.PORT) || 3000;
-
-serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`⚡ LiteHub running on http://localhost:${info.port}`);
-});
+// Skip serve() on Vercel / CF Workers — they use their own handler
+if (typeof process !== "undefined" && !process.env.VERCEL && !process.env.CF_PAGES) {
+  const port = Number(process.env.PORT) || 3000;
+  serve({ fetch: app.fetch, port }, (info) => {
+    console.log(`⚡ LiteHub running on http://localhost:${info.port}`);
+  });
+}
