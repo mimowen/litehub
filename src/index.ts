@@ -1,8 +1,7 @@
-// src/index.ts — Hono 主入口
+// src/index.ts — Hono 主入口（纯 app 定义，无平台特定代码）
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
-import { serve } from "@hono/node-server";
 import {
   registerAgent, getAgent, listAgents,
   ensureQueue, getQueueStatus, listQueues,
@@ -279,12 +278,5 @@ app.get("/api/peek", (c) => {
   return c.json({ ok: true, pointer });
 });
 
-// ─── Start (Node.js only) ──────────────────────────────────────────────────
-
-// Skip serve() on Vercel / CF Workers — they use their own handler
-if (typeof process !== "undefined" && !process.env.VERCEL && !process.env.CF_PAGES) {
-  const port = Number(process.env.PORT) || 3000;
-  serve({ fetch: app.fetch, port }, (info) => {
-    console.log(`⚡ LiteHub running on http://localhost:${info.port}`);
-  });
-}
+// ─── Start ─────────────────────────────────────────────────────────────────
+// 各平台入口文件负责启动服务器，这里只导出 app
