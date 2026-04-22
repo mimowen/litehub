@@ -1,9 +1,8 @@
-// api/[[...route]].ts — Vercel 部署适配器
-// Vercel 会自动识别 api/ 目录下的文件作为 Serverless Functions
+// api/[[...route]].ts — Vercel 部署入口
+// 使用 Turso 适配器，避免引入 better-sqlite3
 import { handle } from "hono/vercel";
-import app from "../src/index";
+import app from "../src/adapters/vercel";
 
-// 导出 Vercel 需要的 handler
 export const config = {
   runtime: "nodejs",
 };
