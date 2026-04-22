@@ -1,0 +1,14 @@
+# dependencies
+node_modules/
+
+# litehub data
+litehub.db
+litehub.db-wal
+litehub.db-shm
+
+# env
+.env
+.env*.local
+
+# os
+.DS_Store

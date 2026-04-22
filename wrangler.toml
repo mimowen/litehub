@@ -1,0 +1,13 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "litehub"
+main = "src/adapters/cf-workers.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# D1 数据库绑定 — 部署前先创建：
+# wrangler d1 create agent-pipeline-db
+# 然后把返回的 database_id 填到下面
+[[d1_databases]]
+binding = "DB"
+database_name = "litehub"
+database_id = "YOUR_D1_DATABASE_ID"
