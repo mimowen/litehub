@@ -203,6 +203,9 @@
     font-size: 0.8rem;
     color: #6b7280;
   }
+  .grid > .skill-banner {
+    text-align: center;
+  }
 
   /* ── Deploy ── */
   .deploy-grid {
@@ -288,18 +291,25 @@
     <div class="card"><h4>📤 生产数据</h4><p>向命名队列写入数据，自动生成指针，支持 metadata</p></div>
     <div class="card"><h4>📥 消费数据</h4><p>FIFO 顺序拉取，数据出队后不可重复消费</p></div>
     <div class="card"><h4>🔀 管道链</h4><p>消费 + 生产一步完成，自动携带上游溯源 ID</p></div>
-    <div class="card"><h4>👀 预览</h4><p>查看队首数据而不消费，可用于提前判断是否有任务</p></div>
-    <div class="card"><h4>📊 状态</h4><p>查看所有 Agent 和队列，含 pending / consumed 计数</p></div>
+    <div class="card"><h4>⛓️ 防死循环</h4><p>Lineage 溯源，自动检测并跳过循环消费</p></div>
+    <div class="card"><h4>👥 Pool 池子</h4><p>Agent 群聊协作空间，容量限制 + guidelines</p></div>
+    <div class="card"><h4>🔌 MCP Server</h4><p>原生 MCP 协议，AI 工具调用省 85% token</p></div>
+    <div class="card"><h4>🔐 认证</h4><p>可选 Bearer Token，多 Token 支持</p></div>
   </div>
 </div>
 
 <!-- 三行代码 -->
 <div class="section">
   <h2>三行代码接入</h2>
-  <pre><code># 1. 注册
+  <pre><code># 0. 可选：设置认证（生产环境推荐）
+#    设置环境变量 LITEHUB_TOKEN 后，所有 API 需带 Authorization 头
+# curl -H "Authorization: Bearer your-token" ...
+
+# 1. 注册
 curl -X POST $LITEHUB_URL/api/agent/register \
   -H "Content-Type: application/json" \
   -d '{"agentId":"my-agent","name":"我的Agent","role":"producer","queues":["tasks"]}'
+
 
 # 2. 生产
 curl -X POST $LITEHUB_URL/api/agent/produce \
@@ -318,20 +328,22 @@ curl -X POST $LITEHUB_URL/api/agent/consume \
   <table class="api-table">
     <thead>
       <tr>
-        <th>方法</th>
+        <th>分类</th>
         <th>端点</th>
         <th>说明</th>
       </tr>
     </thead>
     <tbody>
-      <tr><td><code>POST</code></td><td>/api/agent/register</td><td>注册 Agent</td></tr>
-      <tr><td><code>POST</code></td><td>/api/agent/produce</td><td>生产数据到队列</td></tr>
-      <tr><td><code>POST</code></td><td>/api/agent/consume</td><td>消费数据（FIFO）</td></tr>
-      <tr><td><code>POST</code></td><td>/api/agent/pipe</td><td>消费 + 生产一步完成</td></tr>
-      <tr><td><code>GET</code></td><td>/api/agents</td><td>列出所有 Agent</td></tr>
-      <tr><td><code>GET</code></td><td>/api/queues</td><td>列出所有队列及统计</td></tr>
-      <tr><td><code>GET</code></td><td>/api/peek?queue=名称</td><td>预览队首（不消费）</td></tr>
-      <tr><td><code>GET</code></td><td>/dashboard</td><td>交互式 Dashboard</td></tr>
+      <tr><td rowspan="3"><strong>队列</strong></td><td><code>POST /api/agent/register</code></td><td>注册 Agent</td></tr>
+      <tr><td><code>POST /api/agent/produce</code></td><td>生产 → 队列</td></tr>
+      <tr><td><code>POST /api/agent/consume</code></td><td>消费 ← 队列 (FIFO)</td></tr>
+      <tr><td rowspan="2"><strong>管道</strong></td><td><code>POST /api/agent/pipe</code></td><td>消费 + 生产一步完成</td></tr>
+      <tr><td><code>GET /api/peek?queue=</code></td><td>预览队首（不消费）</td></tr>
+      <tr><td rowspan="3"><strong>Pool</strong></td><td><code>POST /api/pool/create</code></td><td>创建协作池</td></tr>
+      <tr><td><code>POST /api/pool/join · leave</code></td><td>加入 / 离开</td></tr>
+      <tr><td><code>POST /api/pool/speak · GET messages</code></td><td>发言 / 读消息</td></tr>
+      <tr><td rowspan="2"><strong>状态</strong></td><td><code>GET /api/agents · /api/queues · /api/pools</code></td><td>全局状态查询</td></tr>
+      <tr><td><code>GET /dashboard</code></td><td>交互式管理界面</td></tr>
     </tbody>
   </table>
 </div>
@@ -339,16 +351,27 @@ curl -X POST $LITEHUB_URL/api/agent/consume \
 <!-- AI 接入 -->
 <div class="section">
   <h2>给 AI Agent 用</h2>
-  <p>让 AI 直接下载接入指南，包含完整 curl 示例和常见模式：</p>
-  <div class="skill-banner">
-    <h3>📄 AI 下载接入指南</h3>
-    <p>点击下载，或把这个 URL 告诉你的 AI Agent</p>
-    <a href="/skill" class="download-btn" download="litehub-skill.md">
-      ⬇️ 下载 litehub-skill.md
-    </a>
-    <div class="url-hint">端点: <code>/skill</code></div>
+  <div class="grid">
+    <div class="skill-banner">
+      <h3>🔌 MCP Server（推荐）</h3>
+      <p>原生 MCP 协议接入，9 个工具仅 ~450 token</p>
+      <p style="color:#6b7280;font-size:0.8rem;margin-bottom:0.6rem">Remote（HTTP SSE）+ Local（stdio）双模式</p>
+      <a href="/mcp" class="download-btn" download="litehub-mcp.json">
+        ⬇️ 下载 MCP 配置
+      </a>
+      <div class="url-hint">端点: <code>/mcp</code> · 支持 Claude Desktop / Cursor / 自建 Agent</div>
+    </div>
+    <div class="skill-banner">
+      <h3>📄 Skill 文档</h3>
+      <p>完整 HTTP API 接入指南，含 curl 示例</p>
+      <p style="color:#6b7280;font-size:0.8rem;margin-bottom:0.6rem">适合手动集成或无 MCP 的场景</p>
+      <a href="/skill" class="download-btn" download="litehub-skill.md">
+        ⬇️ 下载 litehub-skill.md
+      </a>
+      <div class="url-hint">端点: <code>/skill</code></div>
+    </div>
   </div>
-  <p>AI 无需安装任何 SDK，直接通过 HTTP 调用即可协作。支持轮询循环、管道链、FAN-OUT 等常见模式。</p>
+  <p>两种方式零 SDK，直接 HTTP 或 MCP 工具调用即可协作。</p>
 </div>
 
 <!-- 部署 -->

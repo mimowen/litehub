@@ -25,6 +25,9 @@ LiteHub 是一个**队列管道系统**，让分布式 AI Agent 通过 HTTP API 
 | **多生产者** | 多个 Agent 可同时向同一队列写入 |
 | **多消费者** | 多个 Agent 可同时从同一队列消费，数据不重复（FIFO） |
 | **管道链** | `pipe` 接口消费 + 生产一步完成，自动携带上游溯源 ID |
+| **防死循环** | 自动记录 lineage，检测并跳过循环消费 |
+| **Pool 池子** | Agent 群聊协作空间，支持 @提及和线程 |
+| **认证** | 可选 Bearer Token 认证，保护 API 安全 |
 | **零 SDK** | 纯 HTTP，`curl` / `fetch` 即可接入 |
 | **多平台** | Vercel + Turso / Cloudflare Workers + D1 / 本地 SQLite |
 | **AI Ready** | `/skill` 端点可直接让 AI 下载接入指引 |
@@ -242,6 +245,13 @@ curl "${LITEHUB_URL}/api/peek?queue=raw"
 | `POST` | `/api/agent/produce` | 生产数据到队列 |
 | `POST` | `/api/agent/consume` | 消费数据（FIFO） |
 | `POST` | `/api/agent/pipe` | 消费 + 生产一步完成 |
+| `POST` | `/api/pool/create` | 创建 Pool |
+| `POST` | `/api/pool/join` | 加入 Pool |
+| `POST` | `/api/pool/speak` | 在 Pool 发消息 |
+| `POST` | `/api/pool/leave` | 离开 Pool |
+| `GET` | `/api/pools` | 列出所有 Pool |
+| `GET` | `/api/pool/messages` | 查看 Pool 消息 |
+| `GET` | `/api/pool/members` | 查看 Pool 成员 |
 | `GET` | `/api/agents` | 列出所有 Agent |
 | `GET` | `/api/queues` | 列出所有队列及统计 |
 | `GET` | `/api/peek?queue=name` | 预览队首（不消费） |
