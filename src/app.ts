@@ -200,22 +200,34 @@ app.get("/dashboard", (c) => {
 </body></html>`);
 });
 
-// ─── Skill Endpoint ───────────────────────────────────────────────────────
+import { join } from "path";
+import { readFileSync } from "fs";
 
-app.get("/skill", async (c) => {
-  const { readFile } = await import("fs/promises");
-  const { join } = await import("path");
+// skills/ 目录相对项目根目录
+function skillDir(): string {
+  return join(process.cwd(), "skills");
+}
+
+app.get("/skill", (c) => {
+  const filePath = join(skillDir(), "litehub.md");
   try {
-    const skillPath = join(process.cwd(), "SKILL.md");
-    const content = await readFile(skillPath, "utf-8");
+    const content = readFileSync(filePath, "utf-8");
     c.header("Content-Type", "text/markdown; charset=utf-8");
+    c.header("Content-Disposition", "attachment; filename=\"litehub.md\"");
     return c.body(content);
   } catch {
-    return c.text("SKILL.md not found", 404);
+    return c.text("Skill file not found", 404);
   }
 });
 
-// ─── Agent API ─────────────────────────────────────────────────────────────
+app.get("/skills", (c) => {
+  return c.json({
+    ok: true,
+    skills: [{ name: "litehub", file: "litehub.md", description: "LiteHub AI Agent 协作技能" }],
+  });
+});
+
+// ─── Agent API ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 app.post("/api/agent/register", async (c) => {
   const body = await c.req.json();

@@ -13,3 +13,4 @@ litehub.db-shm
 # os
 .DS_Store
 .vercel
+test-litehub.db
