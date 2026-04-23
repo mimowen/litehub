@@ -7,6 +7,7 @@ export interface FilePointer {
   producerId: string;
   contentType?: string;
   metadata?: Record<string, string>;
+  lineage?: string[];    // producer ID chain for loop detection
 }
 
 export interface QueueMeta {
@@ -34,6 +35,35 @@ export interface PointerRecord {
   size: number;
   contentType?: string;
   metadata?: string;    // JSON 字符串
+  lineage?: string[];   // producer ID 链路，用于循环检测
   createdAt: string;
   status: "pending" | "consumed";
+}
+
+// ─── Pool ────────────────────────────────────────────────────────────────
+
+export interface PoolInfo {
+  name: string;
+  description: string;
+  guidelines: string;
+  maxMembers: number;
+  memberCount: number;
+  createdAt: string;
+}
+
+export interface PoolMessage {
+  id: string;
+  pool: string;
+  agentId: string;
+  content: string;
+  replyTo?: string;
+  tags: string[];
+  metadata?: Record<string, string>;
+  createdAt: string;
+}
+
+export interface PoolMember {
+  agentId: string;
+  pool: string;
+  joinedAt: string;
 }

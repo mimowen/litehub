@@ -2,17 +2,48 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { bearerAuth } from "hono/bearer-auth";
 import {
   registerAgent, getAgent, listAgents,
   ensureQueue, getQueueStatus, listQueues,
   produce, consume, peek, pipe,
 } from "./lib/queue.js";
+import {
+  createPool, getPool, listPools,
+  joinPool, leavePool, listMembers,
+  speak, getMessages,
+} from "./lib/pool.js";
 
 const app = new Hono();
 export default app;
 
 app.use("*", logger());
 app.use("*", cors());
+
+// ─── Auth (disabled when LITEHUB_TOKEN is not set) ─────────────────────
+const TOKEN = process.env.LITEHUB_TOKEN || "";
+const EXTRA_TOKENS = (process.env.LITEHUB_TOKENS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+if (TOKEN) {
+  // Single token: use Hono's built-in bearerAuth
+  if (EXTRA_TOKENS.length === 0) {
+    app.use("/api/*", bearerAuth({ token: TOKEN }));
+  } else {
+    // Multiple tokens: custom middleware
+    const validTokens = new Set([TOKEN, ...EXTRA_TOKENS]);
+    app.use("/api/*", async (c, next) => {
+      const header = c.req.header("Authorization") || "";
+      const t = header.startsWith("Bearer ") ? header.slice(7) : "";
+      if (!t || !validTokens.has(t)) {
+        return c.json({ ok: false, error: "Unauthorized" }, 401);
+      }
+      await next();
+    });
+  }
+}
 
 // ─── Hello Landing Page ────────────────────────────────────────────────────
 
@@ -257,11 +288,11 @@ app.post("/api/agent/produce", async (c) => {
 
 app.post("/api/agent/consume", async (c) => {
   const body = await c.req.json();
-  const { agentId, queue, maxItems } = body;
+  const { agentId, queue, maxItems, loopDetection } = body;
   if (!agentId || !queue) {
     return c.json({ ok: false, error: "缺少必填字段: agentId, queue" }, 400);
   }
-  const items = consume(queue, agentId, maxItems || 1);
+  const items = consume(queue, agentId, maxItems || 1, { loopDetection });
   return c.json({ ok: true, items });
 });
 
@@ -288,6 +319,72 @@ app.get("/api/peek", (c) => {
   const pointer = peek(queue);
   if (!pointer) return c.json({ ok: false, error: "队列为空或不存在" }, 404);
   return c.json({ ok: true, pointer });
+});
+
+// ─── Pool API ───────────────────────────────────────────────────────────
+
+app.post("/api/pool/create", async (c) => {
+  const body = await c.req.json();
+  const { name, description, guidelines, maxMembers } = body;
+  if (!name) return c.json({ ok: false, error: "缺少必填字段: name" }, 400);
+  try {
+    const pool = createPool(name, description, guidelines, maxMembers);
+    return c.json({ ok: true, pool });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message || "Pool 已存在" }, 400);
+  }
+});
+
+app.get("/api/pools", (c) => {
+  return c.json({ ok: true, pools: listPools() });
+});
+
+app.get("/api/pool/:name", (c) => {
+  const name = c.req.param("name");
+  const pool = getPool(name);
+  if (!pool) return c.json({ ok: false, error: "Pool 不存在" }, 404);
+  return c.json({ ok: true, pool });
+});
+
+app.post("/api/pool/join", async (c) => {
+  const body = await c.req.json();
+  const { pool, agentId } = body;
+  if (!pool || !agentId) return c.json({ ok: false, error: "缺少必填字段: pool, agentId" }, 400);
+  const result = joinPool(pool, agentId);
+  if (!result.ok) return c.json(result, 400);
+  return c.json(result);
+});
+
+app.post("/api/pool/leave", async (c) => {
+  const body = await c.req.json();
+  const { pool, agentId } = body;
+  if (!pool || !agentId) return c.json({ ok: false, error: "缺少必填字段: pool, agentId" }, 400);
+  leavePool(pool, agentId);
+  return c.json({ ok: true });
+});
+
+app.get("/api/pool/members", (c) => {
+  const pool = c.req.query("pool");
+  if (!pool) return c.json({ ok: false, error: "缺少 query: pool" }, 400);
+  return c.json({ ok: true, members: listMembers(pool) });
+});
+
+app.post("/api/pool/speak", async (c) => {
+  const body = await c.req.json();
+  const { pool, agentId, content, replyTo, tags, metadata } = body;
+  if (!pool || !agentId || !content) return c.json({ ok: false, error: "缺少必填字段: pool, agentId, content" }, 400);
+  const msg = speak(pool, agentId, content, { replyTo, tags, metadata });
+  return c.json({ ok: true, message: msg });
+});
+
+app.get("/api/pool/messages", (c) => {
+  const pool = c.req.query("pool");
+  const since = c.req.query("since");
+  const tag = c.req.query("tag");
+  const limit = c.req.query("limit");
+  if (!pool) return c.json({ ok: false, error: "缺少 query: pool" }, 400);
+  const result = getMessages(pool, { since, tag, limit: limit ? parseInt(limit) : undefined });
+  return c.json({ ok: true, messages: result.messages, guidelines: result.guidelines });
 });
 
 // ─── Start ─────────────────────────────────────────────────────────────────

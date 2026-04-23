@@ -21,6 +21,7 @@ export function getDb(): Database.Database {
       content_type TEXT DEFAULT 'text/plain',
       metadata    TEXT DEFAULT '{}',
       status      TEXT DEFAULT 'pending',  -- pending / consumed
+      lineage     TEXT DEFAULT '[]',        -- JSON array of producer IDs for loop detection
       created_at  TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_pointers_queue_status ON pointers(queue, status);
@@ -40,7 +41,42 @@ export function getDb(): Database.Database {
       poll_interval INTEGER DEFAULT 0,
       registered_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS pools (
+      name        TEXT PRIMARY KEY,
+      description TEXT DEFAULT '',
+      guidelines  TEXT DEFAULT '你是 Pool 中的协作者。参考他人的工作成果，但不要干预或修改他人的任务。只负责你自己的分析和执行。',
+      max_members INTEGER DEFAULT 20,
+      created_at  TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS pool_members (
+      pool       TEXT NOT NULL,
+      agent_id   TEXT NOT NULL,
+      joined_at  TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (pool, agent_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS pool_messages (
+      id          TEXT PRIMARY KEY,
+      pool        TEXT NOT NULL,
+      agent_id    TEXT NOT NULL,
+      content     TEXT NOT NULL,
+      reply_to    TEXT,
+      tags        TEXT DEFAULT '[]',
+      metadata    TEXT DEFAULT '{}',
+      created_at  TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_pool_messages_pool ON pool_messages(pool, created_at);
+    CREATE INDEX IF NOT EXISTS idx_pool_messages_reply ON pool_messages(reply_to);
   `);
+
+  // Migration: add lineage column if missing
+  const cols = _db.prepare("PRAGMA table_info(pointers)").all() as any[];
+  if (!cols.some((c) => c.name === "lineage")) {
+    _db.exec("ALTER TABLE pointers ADD COLUMN lineage TEXT DEFAULT '[]'");
+  }
+
   return _db;
 }
 

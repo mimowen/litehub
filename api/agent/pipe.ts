@@ -1,5 +1,5 @@
 // api/agent/pipe.ts — POST /api/agent/pipe
-import { initDb, getClient, jsonResponse, parseBody } from "../_lib/turso";
+import { initDb, getClient, jsonResponse, parseBody, validateAuth } from "../_lib/turso.js";
 
 export default {
   async fetch(request: Request) {
@@ -8,13 +8,16 @@ export default {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
         },
       });
     }
     if (request.method !== "POST") {
       return jsonResponse({ ok: false, error: "Method not allowed" }, 405);
     }
+
+    const authErr = validateAuth(request);
+    if (authErr) return authErr;
 
     const body = await parseBody(request);
     const { agentId, sourceQueue, targetQueue, data, contentType, metadata } = body;
@@ -36,15 +39,20 @@ export default {
     const srcRow = srcResult.rows[0];
     await db.execute({ sql: "UPDATE pointers SET status = 'consumed' WHERE id = ?", args: [srcRow.id] });
 
+    // Inherit lineage from source
+    let lineage: string[] = [];
+    try { lineage = JSON.parse((srcRow.lineage as string) || "[]"); } catch { lineage = []; }
+    if (lineage[lineage.length - 1] !== agentId) lineage = [...lineage, agentId];
+
     const id = crypto.randomUUID();
     const text = String(data);
     await db.execute({ sql: "INSERT OR IGNORE INTO queues (name) VALUES (?)", args: [targetQueue] });
     await db.execute({
-      sql: "INSERT INTO pointers (id, queue, producer_id, data, size, content_type, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      sql: "INSERT INTO pointers (id, queue, producer_id, data, size, content_type, metadata, lineage) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       args: [id, targetQueue, agentId, text, text.length, contentType || "text/plain",
-        JSON.stringify({ ...metadata, sourcePointerId: srcRow.id, sourceQueue })],
+        JSON.stringify({ ...metadata, sourcePointerId: srcRow.id, sourceQueue }), JSON.stringify(lineage)],
     });
 
-    return jsonResponse({ ok: true, input: { id: srcRow.id }, output: { id, queue: targetQueue } });
+    return jsonResponse({ ok: true, input: { id: srcRow.id, lineage }, output: { id, queue: targetQueue, lineage } });
   },
 };

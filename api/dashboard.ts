@@ -1,6 +1,6 @@
 // api/dashboard.ts — GET /dashboard
 // Serves an interactive dashboard HTML page
-import { initDb, getClient } from "./_lib/turso";
+import { initDb, getClient } from "./_lib/turso.js";
 
 const HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -114,6 +114,12 @@ const HTML = `<!DOCTYPE html>
       <h1>⚡ <span>LiteHub</span> Dashboard</h1>
     </header>
     <button class="btn-sm" onclick="loadAll()">🔄 刷新</button>
+    <button class="btn-sm" id="token-btn" onclick="toggleTokenInput()">🔑 Token</button>
+  </div>
+  <div id="token-row" style="display:none;margin-bottom:1rem">
+    <input id="token-input" type="password" placeholder="Bearer Token（留空=开放模式）" style="width:70%;margin-right:0.5rem">
+    <button class="btn-sm" onclick="saveToken()">💾 保存</button>
+    <button class="btn-sm" onclick="clearToken()">🗑️ 清除</button>
   </div>
 
   <div id="error-banner" class="error-banner" style="display:none"></div>
@@ -254,6 +260,11 @@ const HTML = `<!DOCTYPE html>
 
 <script>
 const API = '';
+const AUTH_KEY = 'litehub-auth-token';
+
+function getToken() {
+  return localStorage.getItem(AUTH_KEY) || '';
+}
 
 function log(msg, type='info') {
   const el = document.getElementById('log');
@@ -286,6 +297,8 @@ function toggleForm(name) {
 
 async function api(method, path, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  const token = getToken();
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(API + path, opts);
   if (!r.ok) {
@@ -462,6 +475,29 @@ function esc(s) {
   if (s == null) return '';
   return String(s).replace(/&/g,'&amp;').<tr><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e"><code>POST</code></td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e">/api/agent/pipe</td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e;color:#a1a1aa">Consume + produce in one call</td></tr>
 .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function toggleTokenInput() {
+  const row = document.getElementById('token-row');
+  row.style.display = row.style.display === 'none' ? 'flex' : 'none';
+  const input = document.getElementById('token-input');
+  const existing = getToken();
+  if (existing && !input.value) input.value = existing;
+}
+
+function saveToken() {
+  const val = document.getElementById('token-input').value.trim();
+  if (val) localStorage.setItem(AUTH_KEY, val);
+  else localStorage.removeItem(AUTH_KEY);
+  log(val ? '🔑 Token 已保存' : '🔑 Token 已清除', 'ok');
+ loadAll();
+}
+
+function clearToken() {
+  localStorage.removeItem(AUTH_KEY);
+  document.getElementById('token-input').value = '';
+  log('🔑 Token 已清除', 'ok');
+  loadAll();
 }
 
 // Init

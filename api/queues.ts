@@ -1,5 +1,5 @@
 // api/queues.ts — GET /api/queues
-import { initDb, getClient, jsonResponse } from "./_lib/turso";
+import { initDb, getClient, jsonResponse, validateAuth } from "./_lib/turso.js";
 
 export default {
   async fetch(request: Request) {
@@ -8,13 +8,16 @@ export default {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "GET, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
         },
       });
     }
     if (request.method !== "GET") {
       return jsonResponse({ ok: false, error: "Method not allowed" }, 405);
     }
+
+    const authErr = validateAuth(request);
+    if (authErr) return authErr;
 
     await initDb();
     const db = getClient();

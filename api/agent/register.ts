@@ -1,5 +1,5 @@
 // api/agent/register.ts — POST /api/agent/register
-import { initDb, getClient, jsonResponse, parseBody } from "../_lib/turso";
+import { initDb, getClient, jsonResponse, parseBody, validateAuth } from "../_lib/turso.js";
 
 export default {
   async fetch(request: Request) {
@@ -8,13 +8,16 @@ export default {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
         },
       });
     }
     if (request.method !== "POST") {
       return jsonResponse({ ok: false, error: "Method not allowed" }, 405);
     }
+
+    const authErr = validateAuth(request);
+    if (authErr) return authErr;
 
     const body = await parseBody(request);
     const { agentId, name, role, queues, pollInterval } = body;

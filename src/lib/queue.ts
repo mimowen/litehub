@@ -71,35 +71,66 @@ export function produce(
   queueName: string,
   data: string | Buffer,
   producerId: string,
-  options?: { contentType?: string; metadata?: Record<string, string> }
+  options?: { contentType?: string; metadata?: Record<string, string>; lineage?: string[] }
 ) {
   ensureQueue(queueName);
   const id = uuid();
   const buf = typeof data === "string" ? Buffer.from(data, "utf-8") : data;
+
+  // Build lineage: inherit from source + append current producer
+  let lineage = options?.lineage || [];
+  if (lineage.length === 0) {
+    lineage = [producerId];
+  } else if (lineage[lineage.length - 1] !== producerId) {
+    lineage = [...lineage, producerId];
+  }
+
   const db = getDb();
   db.prepare(`
-    INSERT INTO pointers (id, queue, producer_id, data, size, content_type, metadata, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
-  `).run(id, queueName, producerId, buf, buf.length, options?.contentType || "text/plain", JSON.stringify(options?.metadata || {}));
+    INSERT INTO pointers (id, queue, producer_id, data, size, content_type, metadata, lineage, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+  `).run(id, queueName, producerId, buf, buf.length, options?.contentType || "text/plain", JSON.stringify(options?.metadata || {}), JSON.stringify(lineage));
 
-  return { id, queue: queueName, size: buf.length, producerId, createdAt: new Date().toISOString() };
+  return { id, queue: queueName, size: buf.length, producerId, lineage, createdAt: new Date().toISOString() };
 }
 
 // ─── Consume ──────────────────────────────────────────────────────────────
 
-export function consume(queueName: string, consumerId: string, maxItems = 1) {
+export function consume(queueName: string, consumerId: string, maxItems = 1, options?: { loopDetection?: boolean }) {
   const db = getDb();
+  const loopDetection = options?.loopDetection !== false; // default true
+
   const rows = db.prepare(`
     SELECT * FROM pointers WHERE queue = ? AND status = 'pending' ORDER BY created_at LIMIT ?
-  `).all(queueName, maxItems) as any[];
+  `).all(queueName, maxItems * 3) as any[]; // fetch extra rows to skip looped ones
 
   if (rows.length === 0) return [];
 
   const stmt = db.prepare("UPDATE pointers SET status = 'consumed' WHERE id = ?");
-  const results = rows.map(row => {
+  const results: any[] = [];
+
+  for (const row of rows) {
+    if (results.length >= maxItems) break;
+
+    // Loop detection: skip if consumer is in the lineage
+    if (loopDetection) {
+      try {
+        const lineage: string[] = JSON.parse(row.lineage || "[]");
+        if (lineage.includes(consumerId)) {
+          // Mark as looped to prevent re-processing
+          stmt.run(row.id);
+          db.prepare("UPDATE pointers SET status = 'looped' WHERE id = ?").run(row.id);
+          continue; // skip this item
+        }
+      } catch {
+        // invalid lineage JSON, skip check
+      }
+    }
+
     stmt.run(row.id);
     const buf = Buffer.from(row.data as any);
-    return {
+    const lineage = JSON.parse(row.lineage || "[]");
+    results.push({
       pointer: {
         id: row.id,
         queue: row.queue,
@@ -107,12 +138,13 @@ export function consume(queueName: string, consumerId: string, maxItems = 1) {
         producerId: row.producer_id,
         contentType: row.content_type,
         metadata: JSON.parse(row.metadata || "{}"),
+        lineage,
         createdAt: row.created_at,
       },
       data: buf.toString("base64"),
       text: buf.toString("utf-8"),
-    };
-  });
+    });
+  }
 
   return results;
 }
@@ -156,6 +188,7 @@ export function pipe(
       sourcePointerId: inputPointer.id,
       sourceQueue,
     },
+    lineage: inputPointer.lineage as string[],
   });
 
   return { input: inputPointer, output: outputPointer };

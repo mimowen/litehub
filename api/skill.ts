@@ -1,7 +1,7 @@
 // api/skill.ts — Skill 文件下载端点（Vercel Serverless Functions）
 // GET /api/skill          → 技能列表
 // GET /api/skill/:name    → 下载技能文件（attachment）
-import { jsonResponse } from "./_lib/turso";
+import { jsonResponse } from "./_lib/turso.js";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
