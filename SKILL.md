@@ -1,222 +1,244 @@
-# LiteHub Skill — AI Agent Integration Guide
+# LiteHub — AI Agent 协作技能
 
-## What is LiteHub?
+## 你是谁
 
-LiteHub is a lightweight hub for AI agent collaboration via named queues. Agents produce data into queues, other agents consume from those queues, forming processing pipelines. No orchestrator needed — just simple HTTP calls.
+你是一个 AI Agent，刚刚被告知可以使用 LiteHub 来和其他 Agent 协作。
+LiteHub 是一个轻量级队列管道，数据通过命名队列在 Agent 之间传递。
 
-## Setup
+## 连接方式
 
-You need a LiteHub server URL. Set it as:
+LiteHub 实例的 URL 由部署者提供（环境变量 `LITEHUB_URL`）。
+本地开发默认是 `http://localhost:3000`。
 
-```
-LITEHUB_URL=https://your-litehub-instance.example.com
-```
-
-If running locally: `LITEHUB_URL=http://localhost:3000`
-
-All API calls are `POST` (mutations) or `GET` (queries) to `${LITEHUB_URL}/api/...`.
+所有 API 都是标准 HTTP，JSON 格式，无认证（设计用于可信网络）。
 
 ---
 
-## API Reference
+## 第一步：注册
 
-### Register an Agent
-
-Before doing anything, register your agent identity:
+告诉 LiteHub 你是谁：
 
 ```bash
 curl -X POST ${LITEHUB_URL}/api/agent/register \
   -H "Content-Type: application/json" \
   -d '{
-    "agentId": "my-agent",
-    "name": "My Agent",
-    "role": "both",
-    "queues": ["input", "output"],
-    "pollInterval": 5000
+    "agentId": "你的唯一ID",
+    "name": "你的名字",
+    "role": "producer",        # 或 "consumer" 或 "both"
+    "queues": ["队列名"]
   }'
 ```
 
-- `agentId`: Unique identifier for this agent
-- `name`: Human-readable name
-- `role`: `"producer"` | `"consumer"` | `"both"`
-- `queues`: Array of queue names this agent interacts with
-- `pollInterval`: Suggested poll interval in ms (optional)
-
-Response:
+**返回示例**：
 ```json
-{ "ok": true, "agent": { "agentId": "my-agent", "name": "My Agent", ... } }
+{ "ok": true, "agent": { "agentId": "searcher", "name": "搜索Agent", "role": "producer", ... } }
 ```
 
-### Produce Data
+> **提示**：重复注册同一 `agentId` 会更新信息，不会报错。
 
-Push data into a queue:
+---
+
+## 第二步：干活
+
+### 作为生产者 → 生产数据
 
 ```bash
 curl -X POST ${LITEHUB_URL}/api/agent/produce \
   -H "Content-Type: application/json" \
   -d '{
-    "agentId": "my-agent",
-    "queue": "input",
-    "data": "Your data content here",
-    "contentType": "text/plain",
-    "metadata": { "source": "web-search" }
+    "agentId": "你的agentId",
+    "queue": "目标队列名",
+    "data": "你要传递的内容",
+    "metadata": { "来源": "搜索", "关键词": "天气" }
   }'
 ```
 
-- `data`: String content (will be stored in SQLite)
-- `contentType`: MIME type (default: `text/plain`)
-- `metadata`: Optional key-value pairs
-
-Response:
+**返回**：
 ```json
-{ "ok": true, "pointer": { "id": "uuid...", "queue": "input", "size": 24, "producerId": "my-agent", "createdAt": "..." } }
+{ "ok": true, "pointer": { "id": "uuid-xxx", "queue": "results", "size": 24, "createdAt": "..." } }
 ```
 
-### Consume Data
-
-Pull data from a queue (FIFO, removes from queue):
+### 作为消费者 → 拉取数据
 
 ```bash
 curl -X POST ${LITEHUB_URL}/api/agent/consume \
   -H "Content-Type: application/json" \
   -d '{
-    "agentId": "my-agent",
-    "queue": "input",
-    "maxItems": 1
+    "agentId": "你的agentId",
+    "queue": "队列名",
+    "maxItems": 1               # 可选，默认1，最多建议10
   }'
 ```
 
-Response:
+**返回**：
 ```json
 {
   "ok": true,
   "items": [{
-    "pointer": { "id": "uuid...", "queue": "input", "size": 24, "producerId": "...", "contentType": "text/plain", "metadata": {}, "createdAt": "..." },
-    "data": "QmFzZTY0IGVuY29kZWQgY29udGVudA==",
-    "text": "Original text content"
+    "pointer": { "id": "uuid-xxx", "producerId": "searcher", "contentType": "text/plain", ... },
+    "data": "QmFzZTY0...",
+    "text": "原始文本内容"
   }]
 }
 ```
 
-- `data`: Base64-encoded content
-- `text`: UTF-8 decoded content (convenience field)
+> **返回的 `text` 字段是 UTF-8 解码后的内容，直接用即可。**
 
-### Pipe (Consume + Produce)
-
-Consume from source queue, produce to target queue in one call:
+### 作为中间处理者 → 管道（消费 + 生产）
 
 ```bash
 curl -X POST ${LITEHUB_URL}/api/agent/pipe \
   -H "Content-Type: application/json" \
   -d '{
-    "agentId": "my-agent",
-    "sourceQueue": "input",
-    "targetQueue": "output",
-    "data": "Processed result content",
-    "contentType": "text/plain",
-    "metadata": { "step": "summarize" }
+    "agentId": "你的agentId",
+    "sourceQueue": "来源队列",
+    "targetQueue": "目标队列",
+    "data": "处理后的结果内容"
   }'
 ```
 
-Response:
-```json
-{
-  "ok": true,
-  "input": { "id": "consumed-pointer-id", ... },
-  "output": { "id": "new-pointer-id", "queue": "output", ... }
-}
-```
+**等价于**：先 consume，再 produce，但只调用一次 API。
+输出的数据会自动携带 `sourcePointerId` 和 `sourceQueue`，方便全链路溯源。
 
-The output pointer's metadata automatically includes `sourcePointerId` and `sourceQueue` for lineage tracking.
+---
 
-### List Agents
+## 查询接口
 
 ```bash
+# 查看所有 Agent
 curl ${LITEHUB_URL}/api/agents
-```
 
-### List Queues
-
-```bash
+# 查看所有队列（含 pending / consumed 计数）
 curl ${LITEHUB_URL}/api/queues
-```
 
-Response includes `pending` and `consumed` counts per queue.
-
-### Peek Queue
-
-Preview the next item without consuming:
-
-```bash
-curl "${LITEHUB_URL}/api/peek?queue=input"
+# 预览队首（不消费）
+curl "${LITEHUB_URL}/api/peek?queue=队列名"
 ```
 
 ---
 
-## Common Patterns
+## 常见使用模式
 
-### Pipeline: Search → Summarize → Translate
-
-```
-1. Searcher  → produce("raw",     searchResults)
-2. Summarizer → pipe("raw" → "summaries",     summary)
-3. Translator → pipe("summaries" → "translations", translatedText)
-4. Notifier   → consume("translations")
-```
-
-### Fan-out: One Producer, Multiple Consumers
-
-```
-1. Crawler  → produce("pages", html)
-2. Analyzer → consume("pages")   // competing consumers
-3. Archiver → consume("pages")   // whichever gets it first
-```
-
-### Polling Loop (Consumer)
+### 模式一：轮询循环（Consumer 端）
 
 ```python
 import requests, time
 
-LITEHUB = "http://localhost:3000"
+LITEHUB = "http://localhost:3000"   # 或部署的 URL
+AGENT_ID = "my-worker"
+QUEUE = "tasks"
+POLL_INTERVAL = 5   # 秒
 
 while True:
     resp = requests.post(f"{LITEHUB}/api/agent/consume", json={
-        "agentId": "worker-1",
-        "queue": "tasks",
+        "agentId": AGENT_ID,
+        "queue": QUEUE,
+        "maxItems": 1,
     })
     items = resp.json().get("items", [])
     if not items:
-        time.sleep(5)
+        time.sleep(POLL_INTERVAL)
         continue
+
     for item in items:
-        result = process(item["text"])
+        task = item["text"]
+        # ── 在这里处理任务 ──
+        result = process(task)
+
+        # ── 把结果发送到下一个队列 ──
         requests.post(f"{LITEHUB}/api/agent/produce", json={
-            "agentId": "worker-1",
+            "agentId": AGENT_ID,
             "queue": "results",
             "data": result,
         })
 ```
 
----
+### 模式二：管道链（多 Agent 级联）
 
-## Error Handling
-
-All responses include `"ok": true` on success. On failure:
-
-```json
-{ "ok": false, "error": "Description of what went wrong" }
+```
+搜索Agent  ──produce──→  raw
+摘要Agent  ──  pipe  ─→  summaries  ──  pipe  ─→  translations
+翻译Agent  ──  pipe  ─→  en-summaries
+通知Agent  ──consume──→  en-summaries
 ```
 
-Common errors:
-- `400` — Missing required fields
-- `404` — Queue empty or not found (consume/peek/pipe)
+```bash
+# 步骤1：搜索Agent 写入 raw
+curl -X POST ${LITEHUB_URL}/api/agent/produce \
+  -d '{"agentId":"searcher","queue":"raw","data":"搜索结果内容"}'
+
+# 步骤2：摘要Agent 消费 raw，写入 summaries
+curl -X POST ${LITEHUB_URL}/api/agent/pipe \
+  -d '{"agentId":"summarizer","sourceQueue":"raw","targetQueue":"summaries","data":"摘要：..."}'
+
+# 步骤3：翻译Agent 消费 summaries，写入 en-summaries
+curl -X POST ${LITEHUB_URL}/api/agent/pipe \
+  -d '{"agentId":"translator","sourceQueue":"summaries","targetQueue":"en-summaries","data":"Translated..."}'
+```
+
+### 模式三：Fan-Out（一生产者，多消费者竞争）
+
+```
+爬虫Agent  ──produce──→  pages  ←─── consume──  解析Agent（竞争）
+                                    ←─── consume──  存档Agent（竞争）
+```
+
+多个消费者调用 `/api/agent/consume`，FIFO 顺序各自分到不同数据项，不会重复。
+
+### 模式四：聚合（N 个来源汇聚到一个队列）
+
+```
+Agent A ──produce──→  combined
+Agent B ──produce──→  combined
+Agent C ──produce──→  combined
+                       ↓
+聚合Agent ──consume──→  combined（每次拉取多条）
+```
+
+消费时设置 `maxItems: 5` 一次拉取多条。
 
 ---
 
-## Tips
+## 错误处理
 
-- **Idempotent registration**: Re-registering the same `agentId` updates the agent info
-- **Queue auto-creation**: Producing to a non-existent queue creates it automatically
-- **Lineage tracking**: Piped data carries `sourcePointerId` in metadata for tracing
-- **No auth (by default)**: LiteHub is designed for trusted network environments. Add your own auth layer if needed.
-- **Poll, don't push**: Consumers poll at their own pace. No webhooks yet.
+所有成功响应包含 `"ok": true`，失败响应包含 `"ok": false` 和 `"error"` 字段。
+
+常见错误：
+- `队列为空`：consume / peek 时没有数据，正常情况，轮询等待即可
+- `Agent 未注册`：先调用 `/api/agent/register`
+- `队列不存在`：produce 到一个队列会自动创建
+
+---
+
+## 注意事项
+
+1. **队列自动创建**：向不存在的队列 produce 时，会自动创建
+2. **数据不重复**：每条数据只能被消费一次，之后 status 变为 consumed
+3. **无认证**：LiteHub 默认不认证，确保在可信网络中使用
+4. **无被动通知**：消费者需要主动轮询，消费不到数据时返回空数组
+5. **数据大小**：单条数据建议小于 1MB（SQLite BLOB 限制）
+
+---
+
+## 快速命令汇总
+
+```bash
+BASE=${LITEHUB_URL}
+
+# 注册
+curl -X POST $BASE/api/agent/register -d '{"agentId":"my","name":"My","role":"both","queues":["q"]}'
+
+# 生产
+curl -X POST $BASE/api/agent/produce -d '{"agentId":"my","queue":"q","data":"hello"}'
+
+# 消费
+curl -X POST $BASE/api/agent/consume -d '{"agentId":"my","queue":"q"}'
+
+# 管道
+curl -X POST $BASE/api/agent/pipe -d '{"agentId":"my","sourceQueue":"q","targetQueue":"out","data":"processed"}'
+
+# 查询
+curl $BASE/api/agents
+curl $BASE/api/queues
+curl "$BASE/api/peek?queue=q"
+```

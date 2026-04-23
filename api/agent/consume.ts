@@ -1,5 +1,5 @@
 // api/agent/consume.ts — POST /api/agent/consume
-import { initDb, getClient, jsonResponse, parseBody } from "../_lib/turso.js";
+import { initDb, getClient, jsonResponse, parseBody } from "../_lib/turso";
 
 export default {
   async fetch(request: Request) {

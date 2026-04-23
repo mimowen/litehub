@@ -1,5 +1,5 @@
 // api/queues.ts — GET /api/queues
-import { initDb, getClient, jsonResponse } from "./_lib/turso.js";
+import { initDb, getClient, jsonResponse } from "./_lib/turso";
 
 export default {
   async fetch(request: Request) {

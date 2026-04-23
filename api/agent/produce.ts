@@ -1,5 +1,5 @@
 // api/agent/produce.ts — POST /api/agent/produce
-import { initDb, getClient, jsonResponse, parseBody } from "../_lib/turso.js";
+import { initDb, getClient, jsonResponse, parseBody } from "../_lib/turso";
 
 export default {
   async fetch(request: Request) {
