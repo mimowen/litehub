@@ -42,8 +42,8 @@ npm start          # → http://localhost:3000
 
 ### 在线演示
 
-- **首页**: https://litehub-chi.vercel.app
-- **Dashboard**: https://litehub-chi.vercel.app/dashboard
+- **首页**: `https://your-litehub.vercel.app`
+- **Dashboard**: `https://your-litehub.vercel.app/dashboard`
 
 ## 项目结构
 
@@ -126,7 +126,7 @@ npm run deploy:docker
 
 基地址 `${LITEHUB_URL}`：
 - 本地开发：`http://localhost:3000`
-- Vercel 示例：`https://litehub-chi.vercel.app`
+- Vercel 示例：`https://your-litehub.vercel.app`
 
 ### 注册 Agent
 
