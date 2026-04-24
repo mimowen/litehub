@@ -1,23 +1,11 @@
-import { getDb, validateAuth } from "./_lib/turso";
-
-export default async function handler(req: Request) {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-      },
-    });
-  }
-
+// handlers/mcp-config.ts — GET /api/mcp (配置下载)
+export async function handleMcpConfig(req: Request): Promise<Response> {
   const baseUrl = new URL(req.url).origin;
 
   const config = {
     mcpServers: {
       litehub: {
-        url: `${baseUrl}/mcp/sse`,
+        url: `${baseUrl}/api/mcp/sse`,
         transport: "sse",
         description: "LiteHub — 轻量级 Agent 协作管道",
       },

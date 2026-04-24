@@ -1,10 +1,8 @@
-// api/produce.ts — POST /api/agent/produce
-import { getClient, validateAuth, jsonResponse, parseBody, corsResponse } from "./_lib/db.js";
+// handlers/produce.ts — POST /api/agent/produce
+import { getClient, validateAuth, jsonResponse, parseBody } from "../_lib/db";
 
-export default async function handler(req: Request): Promise<Response> {
-  if (req.method === "OPTIONS") return corsResponse();
+export async function handleProduce(req: Request): Promise<Response> {
   if (!validateAuth(req)) return jsonResponse({ ok: false, error: "Unauthorized" }, 401);
-
   if (req.method !== "POST") return jsonResponse({ ok: false, error: "Method not allowed" }, 405);
 
   const body = await parseBody(req);
@@ -12,6 +10,7 @@ export default async function handler(req: Request): Promise<Response> {
   if (!queue || !producerId || !data) {
     return jsonResponse({ ok: false, error: "Missing required fields" }, 400);
   }
+
   const id = crypto.randomUUID();
   const size = new Blob([data]).size;
   const db = getClient();

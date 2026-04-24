@@ -1,16 +1,5 @@
-// api/dashboard.ts — GET /api/dashboard (HTML UI)
-export default async function handler(req: Request): Promise<Response> {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization"
-      }
-    });
-  }
-
+// handlers/dashboard.ts — GET /api/dashboard (HTML UI)
+export async function handleDashboard(req: Request): Promise<Response> {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -119,12 +108,8 @@ export default async function handler(req: Request): Promise<Response> {
   </script>
 </body>
 </html>`;
-
   return new Response(html, {
     status: 200,
-    headers: {
-      "Content-Type": "text/html",
-      "Access-Control-Allow-Origin": "*"
-    }
+    headers: { "Content-Type": "text/html", "Access-Control-Allow-Origin": "*" }
   });
 }
