@@ -380,23 +380,392 @@ async function handleDashboard(_req: Request): Promise<Response> {
   });
 }
 
-// GET /api/mcp
+// MCP 工具定义
+const MCP_TOOLS = [
+  {
+    name: "litehub_register",
+    description: "注册一个新的 Agent 到 LiteHub",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "Agent 的唯一标识符" },
+        name: { type: "string", description: "Agent 的显示名称" },
+        role: { type: "string", description: "Agent 的角色: producer, consumer, 或 both" },
+        queues: { type: "array", items: { type: "string" }, description: "Agent 关联的队列列表" },
+        pollInterval: { type: "number", description: "轮询间隔（毫秒），可选" }
+      },
+      required: ["agentId", "name", "role"]
+    }
+  },
+  {
+    name: "litehub_produce",
+    description: "向指定队列生产数据",
+    inputSchema: {
+      type: "object",
+      properties: {
+        queue: { type: "string", description: "目标队列名称" },
+        producerId: { type: "string", description: "生产者 ID" },
+        data: { description: "要生产的数据，可以是字符串或对象" },
+        contentType: { type: "string", description: "内容类型，默认 text/plain" },
+        metadata: { type: "object", description: "元数据，可选" },
+        lineage: { type: "array", items: { type: "string" }, description: "溯源信息，可选" }
+      },
+      required: ["queue", "producerId", "data"]
+    }
+  },
+  {
+    name: "litehub_consume",
+    description: "从指定队列消费数据（FIFO）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        queue: { type: "string", description: "目标队列名称" },
+        agentId: { type: "string", description: "消费者 ID" }
+      },
+      required: ["queue", "agentId"]
+    }
+  },
+  {
+    name: "litehub_peek",
+    description: "预览队列中的数据（不消费）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        queue: { type: "string", description: "队列名称" },
+        limit: { type: "number", description: "返回的最大数量，默认 10" }
+      },
+      required: ["queue"]
+    }
+  },
+  {
+    name: "litehub_pipe",
+    description: "将数据从一个队列管道传输到另一个队列",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pointerId: { type: "string", description: "源消息 ID" },
+        targetQueue: { type: "string", description: "目标队列名称" },
+        processorId: { type: "string", description: "处理器 ID，可选" }
+      },
+      required: ["pointerId", "targetQueue"]
+    }
+  },
+  {
+    name: "litehub_pool_create",
+    description: "创建一个新的 Pool（协作池）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Pool 名称" },
+        description: { type: "string", description: "Pool 描述，可选" },
+        guidelines: { type: "string", description: "Pool 指导原则，可选" },
+        maxMembers: { type: "number", description: "最大成员数，默认 20" }
+      },
+      required: ["name"]
+    }
+  },
+  {
+    name: "litehub_pool_join",
+    description: "加入一个 Pool",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pool: { type: "string", description: "Pool 名称" },
+        agentId: { type: "string", description: "Agent ID" }
+      },
+      required: ["pool", "agentId"]
+    }
+  },
+  {
+    name: "litehub_pool_leave",
+    description: "离开一个 Pool",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pool: { type: "string", description: "Pool 名称" },
+        agentId: { type: "string", description: "Agent ID" }
+      },
+      required: ["pool", "agentId"]
+    }
+  },
+  {
+    name: "litehub_pool_speak",
+    description: "在 Pool 中发送消息",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pool: { type: "string", description: "Pool 名称" },
+        agentId: { type: "string", description: "Agent ID" },
+        content: { type: "string", description: "消息内容" },
+        replyTo: { type: "string", description: "回复的消息 ID，可选" },
+        tags: { type: "array", items: { type: "string" }, description: "标签，可选" },
+        metadata: { type: "object", description: "元数据，可选" }
+      },
+      required: ["pool", "agentId", "content"]
+    }
+  },
+  {
+    name: "litehub_pool_messages",
+    description: "获取 Pool 中的消息列表",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pool: { type: "string", description: "Pool 名称" },
+        limit: { type: "number", description: "返回的最大数量，默认 50" },
+        since: { type: "string", description: "只返回此时间之后的消息，可选" },
+        tag: { type: "string", description: "按标签过滤，可选" }
+      },
+      required: ["pool"]
+    }
+  },
+  {
+    name: "litehub_agents",
+    description: "获取所有注册的 Agent 列表",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "litehub_queues",
+    description: "获取所有队列及其统计信息",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "litehub_pools",
+    description: "获取所有 Pool 列表",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  }
+];
+
+// MCP JSON-RPC 请求类型
+interface McpRequest {
+  jsonrpc: "2.0";
+  id?: string | number | null;
+  method: string;
+  params?: any;
+}
+
+interface McpResponse {
+  jsonrpc: "2.0";
+  id?: string | number | null;
+  result?: any;
+  error?: {
+    code: number;
+    message: string;
+    data?: any;
+  };
+}
+
+// MCP JSON-RPC 处理函数
+async function handleMcpRequest(req: Request): Promise<Response> {
+  try {
+    const request = await req.json() as McpRequest;
+    
+    if (!request.jsonrpc || request.jsonrpc !== "2.0") {
+      return json({ jsonrpc: "2.0", id: request.id || null, error: { code: -32600, message: "Invalid Request" } }, 400);
+    }
+
+    const { id, method, params } = request;
+
+    switch (method) {
+      case "initialize":
+        return json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            protocolVersion: "2024-11",
+            capabilities: {
+              tools: { listChanged: true }
+            },
+            serverInfo: {
+              name: "LiteHub MCP Server",
+              version: "2.0.0"
+            }
+          }
+        });
+
+      case "tools/list":
+        return json({
+          jsonrpc: "2.0",
+          id,
+          result: { tools: MCP_TOOLS }
+        });
+
+      case "tools/call": {
+        const toolName = params?.name;
+        const toolArgs = params?.arguments || {};
+        
+        const tool = MCP_TOOLS.find(t => t.name === toolName);
+        if (!tool) {
+          return json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Tool not found" } }, 404);
+        }
+
+        try {
+          const result = await executeMcpTool(req, toolName, toolArgs);
+          return json({
+            jsonrpc: "2.0",
+            id,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(result, null, 2)
+                }
+              ]
+            }
+          });
+        } catch (error) {
+          return json({
+            jsonrpc: "2.0",
+            id,
+            error: {
+              code: -32603,
+              message: "Internal error",
+              data: error instanceof Error ? error.message : String(error)
+            }
+          }, 500);
+        }
+      }
+
+      default:
+        return json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } }, 404);
+    }
+  } catch (error) {
+    return json({
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32700, message: "Parse error" }
+    }, 400);
+  }
+}
+
+async function executeMcpTool(req: Request, toolName: string, args: any): Promise<any> {
+  const baseUrl = new URL(req.url).origin;
+
+  switch (toolName) {
+    case "litehub_register": {
+      const mockReq = new Request(`${baseUrl}/api/agent/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args)
+      });
+      return await handleAgentRegister(mockReq);
+    }
+
+    case "litehub_produce": {
+      const mockReq = new Request(`${baseUrl}/api/agent/produce`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args)
+      });
+      return await handleProduce(mockReq);
+    }
+
+    case "litehub_consume": {
+      const mockReq = new Request(`${baseUrl}/api/agent/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args)
+      });
+      return await handleConsume(mockReq);
+    }
+
+    case "litehub_peek": {
+      const mockReq = new Request(`${baseUrl}/api/peek?queue=${args.queue}&limit=${args.limit || 10}`);
+      return await handlePeek(mockReq);
+    }
+
+    case "litehub_pipe": {
+      const mockReq = new Request(`${baseUrl}/api/agent/pipe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args)
+      });
+      return await handlePipe(mockReq);
+    }
+
+    case "litehub_pool_create": {
+      const mockReq = new Request(`${baseUrl}/api/pool/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args)
+      });
+      return await handlePoolCreate(mockReq);
+    }
+
+    case "litehub_pool_join": {
+      const mockReq = new Request(`${baseUrl}/api/pool/join`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args)
+      });
+      return await handlePoolJoin(mockReq);
+    }
+
+    case "litehub_pool_leave": {
+      const mockReq = new Request(`${baseUrl}/api/pool/leave`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args)
+      });
+      return await handlePoolLeave(mockReq);
+    }
+
+    case "litehub_pool_speak": {
+      const mockReq = new Request(`${baseUrl}/api/pool/speak`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args)
+      });
+      return await handlePoolSpeak(mockReq);
+    }
+
+    case "litehub_pool_messages": {
+      const mockReq = new Request(`${baseUrl}/api/pool/messages?pool=${args.pool}&limit=${args.limit || 50}${args.since ? `&since=${args.since}` : ""}${args.tag ? `&tag=${args.tag}` : ""}`);
+      return await handlePoolMessages(mockReq);
+    }
+
+    case "litehub_agents": {
+      const mockReq = new Request(`${baseUrl}/api/agents`);
+      return await handleAgents(mockReq);
+    }
+
+    case "litehub_queues": {
+      const mockReq = new Request(`${baseUrl}/api/queues`);
+      return await handleQueues(mockReq);
+    }
+
+    case "litehub_pools": {
+      const mockReq = new Request(`${baseUrl}/api/pools`);
+      return await handlePools(mockReq);
+    }
+
+    default:
+      throw new Error(`Unknown tool: ${toolName}`);
+  }
+}
+
+// GET /api/mcp - 保留用于向后兼容
 async function handleMcpConfig(req: Request): Promise<Response> {
   const baseUrl = new URL(req.url).origin;
   const config = {
-    mcpServers: { litehub: { url: `${baseUrl}/api/mcp/sse`, transport: "sse", description: "LiteHub — Agent Collaboration Hub" } },
-    tools: [
-      { name: "litehub-register", description: "注册 Agent" },
-      { name: "litehub-produce", description: "向队列生产数据" },
-      { name: "litehub-consume", description: "从队列消费 (FIFO)" },
-      { name: "litehub-peek", description: "预览队首" },
-      { name: "litehub-pipe", description: "管道传输" },
-      { name: "litehub-pool-create", description: "创建 Pool" },
-      { name: "litehub-pool-join", description: "加入 Pool" },
-      { name: "litehub-pool-speak", description: "Pool 发言" },
-      { name: "litehub-pool-read", description: "读取 Pool 消息" },
-    ],
-    auth: { type: "bearer", description: "Set LITEHUB_TOKEN env var, then send Authorization: Bearer <token>" },
+    name: "LiteHub MCP Server",
+    version: "2.0.0",
+    description: "LiteHub — Agent Collaboration Hub via MCP",
+    transport: "http",
+    endpoint: `${baseUrl}/api/mcp`,
+    tools: MCP_TOOLS.map(t => ({
+      name: t.name,
+      description: t.description
+    })),
+    auth: { type: "bearer", description: "Set LITEHUB_TOKEN env var, then send Authorization: Bearer <token>" }
   };
   return new Response(JSON.stringify(config, null, 2), {
     headers: {
@@ -443,6 +812,12 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   const url = new URL(req.url);
+  
+  // MCP JSON-RPC 请求处理（POST /api/mcp）
+  if (url.pathname === "/api/mcp" && req.method === "POST") {
+    return handleMcpRequest(req);
+  }
+  
   // 更加鲁棒的路径提取：移除 /api 前缀，保留核心路径
   let path = url.pathname.replace(/^\/api/, "").replace(/^\/+/, "").replace(/\/+$/, "");
   
