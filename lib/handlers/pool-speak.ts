@@ -1,5 +1,5 @@
 // handlers/pool-speak.ts — POST /api/pool/speak
-import { getClient, validateAuth, jsonResponse, parseBody } from "../_lib/db";
+import { getClient, validateAuth, jsonResponse, parseBody } from "../../api/_lib/db";
 
 export async function handlePoolSpeak(req: Request): Promise<Response> {
   if (!validateAuth(req)) return jsonResponse({ ok: false, error: "Unauthorized" }, 401);

@@ -1,5 +1,5 @@
 // handlers/queues.ts — GET /api/queues
-import { getClient, validateAuth, jsonResponse } from "../_lib/db";
+import { getClient, validateAuth, jsonResponse } from "../../api/_lib/db";
 
 export async function handleQueues(req: Request): Promise<Response> {
   if (!validateAuth(req)) return jsonResponse({ ok: false, error: "Unauthorized" }, 401);

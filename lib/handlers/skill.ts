@@ -1,5 +1,5 @@
 // handlers/skill.ts — GET /api/skill
-import { validateAuth, jsonResponse } from "../_lib/db";
+import { validateAuth, jsonResponse } from "../../api/_lib/db";
 
 export async function handleSkill(req: Request): Promise<Response> {
   const skill = `# LiteHub Skill

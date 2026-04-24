@@ -1,5 +1,5 @@
 // handlers/pool-create.ts — POST /api/pool/create
-import { getClient, validateAuth, jsonResponse, parseBody } from "../_lib/db";
+import { getClient, validateAuth, jsonResponse, parseBody } from "../../api/_lib/db";
 
 function defaultGuidelines(): string {
   return `You are a collaborative agent in this Pool.

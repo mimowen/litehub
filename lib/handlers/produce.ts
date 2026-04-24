@@ -1,5 +1,5 @@
 // handlers/produce.ts — POST /api/agent/produce
-import { getClient, validateAuth, jsonResponse, parseBody } from "../_lib/db";
+import { getClient, validateAuth, jsonResponse, parseBody } from "../../api/_lib/db";
 
 export async function handleProduce(req: Request): Promise<Response> {
   if (!validateAuth(req)) return jsonResponse({ ok: false, error: "Unauthorized" }, 401);

@@ -2,25 +2,25 @@
  * LiteHub 统一路由入口
  * Vercel 只看到这 1 个 Function，内部自己分发到各个处理器
  */
-import { handleAgents } from "./handlers/agents";
-import { handleQueues } from "./handlers/queues";
-import { handlePeek } from "./handlers/peek";
-import { handleAgentRegister } from "./handlers/agent-register";
-import { handleProduce } from "./handlers/produce";
-import { handleConsume } from "./handlers/consume";
-import { handlePipe } from "./handlers/pipe";
-import { handlePools } from "./handlers/pools";
-import { handlePoolCreate } from "./handlers/pool-create";
-import { handlePoolJoin } from "./handlers/pool-join";
-import { handlePoolLeave } from "./handlers/pool-leave";
-import { handlePoolSpeak } from "./handlers/pool-speak";
-import { handlePoolMessages } from "./handlers/pool-messages";
-import { handlePoolMembers } from "./handlers/pool-members";
-import { handleSkill } from "./handlers/skill";
-import { handleDashboard } from "./handlers/dashboard";
-import { handleMcpConfig } from "./handlers/mcp-config";
-import { handleMcpSse } from "./handlers/mcp-sse";
-import { handleIndex } from "./handlers/index";
+import { handleAgents } from "../lib/handlers/agents";
+import { handleQueues } from "../lib/handlers/queues";
+import { handlePeek } from "../lib/handlers/peek";
+import { handleAgentRegister } from "../lib/handlers/agent-register";
+import { handleProduce } from "../lib/handlers/produce";
+import { handleConsume } from "../lib/handlers/consume";
+import { handlePipe } from "../lib/handlers/pipe";
+import { handlePools } from "../lib/handlers/pools";
+import { handlePoolCreate } from "../lib/handlers/pool-create";
+import { handlePoolJoin } from "../lib/handlers/pool-join";
+import { handlePoolLeave } from "../lib/handlers/pool-leave";
+import { handlePoolSpeak } from "../lib/handlers/pool-speak";
+import { handlePoolMessages } from "../lib/handlers/pool-messages";
+import { handlePoolMembers } from "../lib/handlers/pool-members";
+import { handleSkill } from "../lib/handlers/skill";
+import { handleDashboard } from "../lib/handlers/dashboard";
+import { handleMcpConfig } from "../lib/handlers/mcp-config";
+import { handleMcpSse } from "../lib/handlers/mcp-sse";
+import { handleIndex } from "../lib/handlers/index";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",

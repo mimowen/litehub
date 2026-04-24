@@ -1,5 +1,5 @@
 // handlers/index.ts — GET /api (index page)
-import { jsonResponse } from "../_lib/db";
+import { jsonResponse } from "../../api/_lib/db";
 
 export async function handleIndex(req: Request): Promise<Response> {
   return jsonResponse({

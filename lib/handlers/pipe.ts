@@ -1,5 +1,5 @@
 // handlers/pipe.ts — POST /api/agent/pipe
-import { getClient, validateAuth, jsonResponse, parseBody } from "../_lib/db";
+import { getClient, validateAuth, jsonResponse, parseBody } from "../../api/_lib/db";
 
 export async function handlePipe(req: Request): Promise<Response> {
   if (!validateAuth(req)) return jsonResponse({ ok: false, error: "Unauthorized" }, 401);
