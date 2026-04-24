@@ -183,7 +183,7 @@ app.get("/", (c) => {
 
 // ─── Dashboard (status page) ───────────────────────────────────────────────
 
-app.get("/dashboard", (c) => {
+app.get("/api/dashboard", (c) => {
   const agents = listAgents();
   const queues = listQueues();
 
@@ -239,7 +239,7 @@ function skillDir(): string {
   return join(process.cwd(), "skills");
 }
 
-app.get("/skill", (c) => {
+app.get("/api/skill", (c) => {
   const filePath = join(skillDir(), "litehub.md");
   try {
     const content = readFileSync(filePath, "utf-8");
@@ -251,10 +251,73 @@ app.get("/skill", (c) => {
   }
 });
 
-app.get("/skills", (c) => {
+app.get("/api/skills", (c) => {
   return c.json({
     ok: true,
     skills: [{ name: "litehub", file: "litehub.md", description: "LiteHub AI Agent 协作技能" }],
+  });
+});
+
+app.get("/api/mcp", (c) => {
+  const baseUrl = new URL(c.req.url).origin;
+  const config = {
+    mcpServers: {
+      litehub: {
+        url: `${baseUrl}/api/mcp/sse`,
+        transport: "sse",
+        description: "LiteHub — 轻量级 Agent 协作管道",
+      },
+    },
+    tools: [
+      { name: "litehub-register", description: "注册 Agent 到队列系统" },
+      { name: "litehub-produce", description: "向命名队列生产数据" },
+      { name: "litehub-consume", description: "从队列消费数据 (FIFO)" },
+      { name: "litehub-peek", description: "预览队首数据（不消费）" },
+      { name: "litehub-pipe", description: "消费+生产一步完成" },
+      { name: "litehub-pool-create", description: "创建协作 Pool" },
+      { name: "litehub-pool-join", description: "加入 Pool" },
+      { name: "litehub-pool-speak", description: "在 Pool 发言" },
+      { name: "litehub-pool-read", description: "读取 Pool 消息" },
+    ],
+    endpoints: {
+      register: "POST /api/agent/register",
+      produce: "POST /api/agent/produce",
+      consume: "POST /api/agent/consume",
+      pipe: "POST /api/agent/pipe",
+      peek: "GET /api/peek?queue=",
+      poolCreate: "POST /api/pool/create",
+      poolJoin: "POST /api/pool/join",
+      poolSpeak: "POST /api/pool/speak",
+      poolMessages: "GET /api/pool/messages",
+      agents: "GET /api/agents",
+      queues: "GET /api/queues",
+      pools: "GET /api/pools",
+    },
+    auth: {
+      type: "bearer",
+      description: "设置环境变量 LITEHUB_TOKEN 后，请求需携带 Authorization: Bearer <token>",
+    },
+  };
+  c.header("Content-Type", "application/json");
+  c.header("Content-Disposition", 'attachment; filename="litehub-mcp.json"');
+  return c.json(config);
+});
+
+// ─── API Root ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+app.get("/api", (c) => {
+  return c.json({
+    ok: true,
+    name: "LiteHub",
+    version: "2.0.0",
+    endpoints: {
+      agents: "/api/agents",
+      queues: "/api/queues",
+      pools: "/api/pools",
+      dashboard: "/api/dashboard",
+      skill: "/api/skill",
+      mcp: "/api/mcp",
+    },
   });
 });
 
@@ -339,6 +402,23 @@ app.get("/api/pools", (c) => {
   return c.json({ ok: true, pools: listPools() });
 });
 
+// 具体路径必须在参数路由 :name 之前，否则会被 :name 匹配
+app.get("/api/pool/members", (c) => {
+  const pool = c.req.query("pool");
+  if (!pool) return c.json({ ok: false, error: "缺少 query: pool" }, 400);
+  return c.json({ ok: true, members: listMembers(pool) });
+});
+
+app.get("/api/pool/messages", (c) => {
+  const pool = c.req.query("pool");
+  const since = c.req.query("since");
+  const tag = c.req.query("tag");
+  const limit = c.req.query("limit");
+  if (!pool) return c.json({ ok: false, error: "缺少 query: pool" }, 400);
+  const result = getMessages(pool, { since, tag, limit: limit ? parseInt(limit) : undefined });
+  return c.json({ ok: true, messages: result.messages, guidelines: result.guidelines });
+});
+
 app.get("/api/pool/:name", (c) => {
   const name = c.req.param("name");
   const pool = getPool(name);
@@ -363,28 +443,12 @@ app.post("/api/pool/leave", async (c) => {
   return c.json({ ok: true });
 });
 
-app.get("/api/pool/members", (c) => {
-  const pool = c.req.query("pool");
-  if (!pool) return c.json({ ok: false, error: "缺少 query: pool" }, 400);
-  return c.json({ ok: true, members: listMembers(pool) });
-});
-
 app.post("/api/pool/speak", async (c) => {
   const body = await c.req.json();
   const { pool, agentId, content, replyTo, tags, metadata } = body;
   if (!pool || !agentId || !content) return c.json({ ok: false, error: "缺少必填字段: pool, agentId, content" }, 400);
   const msg = speak(pool, agentId, content, { replyTo, tags, metadata });
   return c.json({ ok: true, message: msg });
-});
-
-app.get("/api/pool/messages", (c) => {
-  const pool = c.req.query("pool");
-  const since = c.req.query("since");
-  const tag = c.req.query("tag");
-  const limit = c.req.query("limit");
-  if (!pool) return c.json({ ok: false, error: "缺少 query: pool" }, 400);
-  const result = getMessages(pool, { since, tag, limit: limit ? parseInt(limit) : undefined });
-  return c.json({ ok: true, messages: result.messages, guidelines: result.guidelines });
 });
 
 // ─── Start ─────────────────────────────────────────────────────────────────
