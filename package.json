@@ -14,10 +14,10 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.0.0",
-    "@libsql/client": "^0.14.0",
-
     "hono": "^4.12.14",
-    "uuid": "^9.0.0"
+    "node-fetch": "^3.3.2",
+    "uuid": "^14.0.0",
+    "@libsql/client": "^0.14.0"
   },
   "optionalDependencies": {
     "better-sqlite3": "^11.0.0"
