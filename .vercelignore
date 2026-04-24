@@ -1,4 +1,4 @@
-# Vercel 部署时忽略的文件
 # 本地开发入口（依赖 better-sqlite3，不兼容 Vercel serverless）
 src/app.ts
 src/server.ts
+src/lib/

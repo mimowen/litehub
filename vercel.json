@@ -1,0 +1,13 @@
+{
+  "builds": [
+    {
+      "src": "src/vercel.ts",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/src/vercel.ts" },
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ]
+}

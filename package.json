@@ -1,19 +1,21 @@
 {
   "name": "litehub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "npx tsx --watch src/server.ts",
     "dev:bun": "bun run --watch src/server.ts",
     "start": "npx tsx src/server.ts",
     "start:bun": "bun run src/server.ts",
-    "deploy:vercel": "vercel --prod",
+    "deploy:vercel": "vercel",
+    "deploy:vercel:prod": "vercel --prod",
     "deploy:cf": "wrangler deploy",
     "deploy:docker": "docker build -t litehub . && docker run -d -p 3000:3000 -v litehub-data:/app/data litehub"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.0",
     "@libsql/client": "^0.14.0",
+
     "hono": "^4.12.14",
     "uuid": "^9.0.0"
   },
