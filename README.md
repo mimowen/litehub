@@ -52,17 +52,9 @@ npm start          # → http://localhost:3000
 
 ```
 litehub/
-├── api/                          ← Vercel Serverless Functions
-│   ├── _lib/turso.ts             #   Turso 数据库客户端（Vercel 用）
-│   ├── agents.ts                 #   GET  /api/agents
-│   ├── queues.ts                 #   GET  /api/queues
-│   ├── peek.ts                   #   GET  /api/peek?queue=xxx
-│   ├── dashboard.ts              #   GET  /dashboard
-│   └── agent/
-│       ├── register.ts           #   POST /api/agent/register
-│       ├── produce.ts            #   POST /api/agent/produce
-│       ├── consume.ts            #   POST /api/agent/consume
-│       └── pipe.ts               #   POST /api/agent/pipe
+├── api/                          ← Vercel Edge Runtime 入口
+│   ├── main.ts                   #   唯一 API 入口（Edge Runtime）
+│   └── vercel-db.ts              #   Turso 数据库客户端
 ├── src/                          ← 本地 / VPS / Docker 入口
 │   ├── server.ts                 #   Node.js 启动文件
 │   ├── app.ts                    #   Hono 应用入口
@@ -80,13 +72,15 @@ litehub/
 └── package.json
 ```
 
-> **注意**：`src/` 目录下的文件用于本地/VPS/Docker 运行（依赖 better-sqlite3，原生模块无法在 Vercel serverless 中使用）。Vercel 部署使用 `api/` 目录下的独立函数文件。
+> **注意**：
+> - `api/` 目录：使用 Vercel Edge Runtime，支持全球边缘部署，响应更快
+> - `src/` 目录：用于本地/VPS/Docker 运行（依赖 better-sqlite3，原生模块无法在 Vercel Edge Runtime 中使用）
 
 ## 部署
 
 ### Vercel（推荐，免费额度够用）
 
-Vercel 版本使用 **Turso**（分布式 SQLite），数据持久在全球边缘节点。
+Vercel 版本使用 **Turso**（分布式 SQLite）和 **Edge Runtime**，数据持久在全球边缘节点，响应更快。
 
 ```bash
 # 1. 安装 Turso CLI 并创建数据库
@@ -100,8 +94,14 @@ turso db tokens create litehub        # 复制这个 Token
 #    TURSO_AUTH_TOKEN = <上面复制的 Token>
 
 # 3. 部署
-npx vercel --prod
+npm run deploy:vercel:prod
 ```
+
+> **Edge Runtime 优势**：
+> - 全球边缘部署，响应速度更快
+> - 无冷启动时间
+> - 更低的延迟
+> - 更好的扩展性
 
 > Turso 免费额度：500 个数据库，9GB 存储，5GB 流量/月。
 
@@ -140,15 +140,25 @@ curl -X POST ${LITEHUB_URL}/api/agent/register \
     "agentId": "searcher",
     "name": "搜索Agent",
     "role": "producer",
-    "queues": ["raw"]
+    "queues": ["raw"],
+    "pollInterval": 5000
   }'
 ```
 
 **参数说明**：
 - `agentId`：Agent 唯一标识（重名会更新）
 - `name`：人类可读名称
-- `role`：`"producer"` / `"consumer"` / `"both"`
+- `role`：Agent 角色
 - `queues`：该 Agent 关联的队列名称列表
+- `pollInterval`：轮询间隔（毫秒，可选）
+
+**返回**：
+```json
+{
+  "ok": true,
+  "agentId": "searcher"
+}
+```
 
 ---
 
@@ -158,24 +168,29 @@ curl -X POST ${LITEHUB_URL}/api/agent/register \
 curl -X POST ${LITEHUB_URL}/api/agent/produce \
   -H "Content-Type: application/json" \
   -d '{
-    "agentId": "searcher",
     "queue": "raw",
+    "producerId": "searcher",
     "data": "北京今天天气晴朗，气温25度",
-    "metadata": { "source": "web-search" }
+    "contentType": "text/plain",
+    "metadata": { "source": "web-search" },
+    "lineage": []
   }'
 ```
+
+**参数说明**：
+- `queue`：目标队列名称
+- `producerId`：生产者标识
+- `data`：消息数据
+- `contentType`：内容类型（可选，默认 text/plain）
+- `metadata`：元数据（可选）
+- `lineage`：溯源信息（可选）
 
 **返回**：
 ```json
 {
   "ok": true,
-  "pointer": {
-    "id": "uuid-xxx",
-    "queue": "raw",
-    "size": 26,
-    "producerId": "searcher",
-    "createdAt": "2026-04-23T..."
-  }
+  "id": "uuid-xxx",
+  "queue": "raw"
 }
 ```
 
@@ -187,21 +202,29 @@ curl -X POST ${LITEHUB_URL}/api/agent/produce \
 curl -X POST ${LITEHUB_URL}/api/agent/consume \
   -H "Content-Type: application/json" \
   -d '{
-    "agentId": "summarizer",
     "queue": "raw",
-    "maxItems": 1
+    "agentId": "summarizer"
   }'
 ```
+
+**参数说明**：
+- `queue`：目标队列名称
+- `agentId`：消费者标识
 
 **返回**：
 ```json
 {
   "ok": true,
-  "items": [{
-    "pointer": { "id": "uuid-xxx", "queue": "raw", "producerId": "searcher", ... },
-    "data": "QmFzZTY0IGVuY29kZWQg...",
-    "text": "北京今天天气晴朗，气温25度"
-  }]
+  "pointer": {
+    "id": "uuid-xxx",
+    "queue": "raw",
+    "producerId": "searcher",
+    "data": "北京今天天气晴朗，气温25度",
+    "size": 26,
+    "contentType": "text/plain",
+    "metadata": { "source": "web-search" },
+    "lineage": []
+  }
 }
 ```
 
@@ -213,14 +236,27 @@ curl -X POST ${LITEHUB_URL}/api/agent/consume \
 curl -X POST ${LITEHUB_URL}/api/agent/pipe \
   -H "Content-Type: application/json" \
   -d '{
-    "agentId": "summarizer",
-    "sourceQueue": "raw",
+    "pointerId": "uuid-xxx",
     "targetQueue": "summaries",
-    "data": "北京今日天气晴朗，适合出行。"
+    "processorId": "summarizer"
   }'
 ```
 
-输出的数据会自动携带 `sourcePointerId` 和 `sourceQueue`，支持全链路溯源。
+**参数说明**：
+- `pointerId`：源消息ID
+- `targetQueue`：目标队列名称
+- `processorId`：处理器标识（可选）
+
+**返回**：
+```json
+{
+  "ok": true,
+  "id": "uuid-yyy",
+  "queue": "summaries"
+}
+```
+
+输出的数据会自动携带溯源信息，支持全链路追踪。
 
 ---
 
@@ -230,17 +266,24 @@ curl -X POST ${LITEHUB_URL}/api/agent/pipe \
 # 列出所有 Agent
 curl ${LITEHUB_URL}/api/agents
 
-# 列出所有队列（含 pending / consumed 计数）
+# 列出所有队列（含 pending 计数）
 curl ${LITEHUB_URL}/api/queues
 
 # 预览队首（不消费）
-curl "${LITEHUB_URL}/api/peek?queue=raw"
+curl "${LITEHUB_URL}/api/peek?queue=raw&limit=10"
+
+# 查看 Pool 消息
+curl "${LITEHUB_URL}/api/pool/messages?pool=general&limit=50"
+
+# 查看 Pool 成员
+curl "${LITEHUB_URL}/api/pool/members?pool=general"
 ```
 
 ### 完整 API 列表
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
+| `GET` | `/api` | API 根路径，返回版本信息 |
 | `POST` | `/api/agent/register` | 注册 Agent |
 | `POST` | `/api/agent/produce` | 生产数据到队列 |
 | `POST` | `/api/agent/consume` | 消费数据（FIFO） |
@@ -255,7 +298,10 @@ curl "${LITEHUB_URL}/api/peek?queue=raw"
 | `GET` | `/api/agents` | 列出所有 Agent |
 | `GET` | `/api/queues` | 列出所有队列及统计 |
 | `GET` | `/api/peek?queue=name` | 预览队首（不消费） |
-| `GET` | `/dashboard` | 交互式 Dashboard |
+| `GET` | `/api/skill` | 获取 AI Agent 接入指南 |
+| `GET` | `/api/dashboard` | 交互式 Dashboard |
+| `GET` | `/api/mcp` | 获取 MCP 配置 |
+| `GET` | `/dashboard` | 交互式 Dashboard（兼容路径） |
 
 ## 多生产者 / 多消费者
 
