@@ -14,3 +14,6 @@ litehub.db-shm
 .DS_Store
 .vercel
 test-litehub.db
+
+#tree
+.trae/*
