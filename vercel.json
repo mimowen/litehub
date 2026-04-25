@@ -1,6 +1,8 @@
 {
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/main" },
+    { "source": "/mcp/(.*)", "destination": "/api/main" },
+    { "source": "/mcp", "destination": "/api/main" },
     { "source": "/dashboard", "destination": "/api/main" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]

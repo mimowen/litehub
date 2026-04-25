@@ -818,6 +818,67 @@ export default async function handler(req: Request): Promise<Response> {
     return handleMcpRequest(req);
   }
   
+  // 新增：处理 /mcp 路径（不带 /api 前缀）
+  if (url.pathname === "/mcp") {
+    if (req.method === "GET") {
+      // GET /mcp - 返回 SSE 流
+      const encoder = new TextEncoder();
+      
+      const stream = new ReadableStream({
+        start(controller) {
+          // 发送 MCP 初始化消息
+          const initMessage = {
+            jsonrpc: "2.0",
+            method: "notifications/initialized",
+            params: {
+              protocolVersion: "2024-11-05",
+              capabilities: {
+                tools: { listChanged: true },
+                resources: {},
+              },
+              serverInfo: {
+                name: "LiteHub",
+                version: "2.0.0",
+              },
+            },
+          };
+          
+          const sseMessage = `data: ${JSON.stringify(initMessage)}\n\n`;
+          controller.enqueue(encoder.encode(sseMessage));
+          
+          // 心跳保持连接
+          const interval = setInterval(() => {
+            controller.enqueue(encoder.encode(": heartbeat\n\n"));
+          }, 15000);
+          
+          // 连接关闭时清理
+          req.signal.addEventListener("abort", () => {
+            clearInterval(interval);
+            controller.close();
+          });
+        },
+      });
+      
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, mcp-session-id",
+          // 强制设置 Content-Type
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } else if (req.method === "POST" || req.method === "DELETE") {
+      // POST/DELETE /mcp - 处理 JSON-RPC
+      return handleMcpRequest(req);
+    } else {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+  }
+  
   // 更加鲁棒的路径提取：移除 /api 前缀，保留核心路径
   let path = url.pathname.replace(/^\/api/, "").replace(/^\/+/, "").replace(/\/+$/, "");
   

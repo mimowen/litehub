@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { bearerAuth } from "hono/bearer-auth";
+import { handleStreamableHTTP, handleSSE } from "./lib/mcp-handler.js";
 import {
   registerAgent, getAgent, listAgents,
   ensureQueue, getQueueStatus, listQueues,
@@ -328,7 +329,7 @@ app.get("/api/mcp", (c) => {
       litehub: {
         url: `${baseUrl}/api/mcp/sse`,
         transport: "sse",
-        description: "LiteHub — 轻量级 Agent 协作管道",
+        description: "LiteHub — 轻量级 Agent 协作管道 (支持 SSE 和 Streamable HTTP)",
       },
     },
     tools: [
@@ -341,6 +342,9 @@ app.get("/api/mcp", (c) => {
       { name: "litehub-pool-join", description: "加入 Pool" },
       { name: "litehub-pool-speak", description: "在 Pool 发言" },
       { name: "litehub-pool-read", description: "读取 Pool 消息" },
+      { name: "litehub-agents", description: "列出所有 Agent" },
+      { name: "litehub-queues", description: "列出所有队列" },
+      { name: "litehub-pools", description: "列出所有 Pool" },
     ],
     endpoints: {
       register: "POST /api/agent/register",
@@ -355,15 +359,51 @@ app.get("/api/mcp", (c) => {
       agents: "GET /api/agents",
       queues: "GET /api/queues",
       pools: "GET /api/pools",
+      mcpSSE: "GET|POST /api/mcp/sse",
     },
     auth: {
       type: "bearer",
       description: "设置环境变量 LITEHUB_TOKEN 后，请求需携带 Authorization: Bearer <token>",
     },
+    transports: {
+      sse: "Server-Sent Events (传统方式，适合短连接)",
+      streamableHttp: "Streamable HTTP (推荐，更高效，Vercel 官方推荐)",
+    },
   };
   c.header("Content-Type", "application/json");
   c.header("Content-Disposition", 'attachment; filename="litehub-mcp.json"');
   return c.json(config);
+});
+
+// ─── MCP Streamable HTTP / SSE Endpoint ─────────────────────────────────
+// Primary endpoint supporting both Streamable HTTP (recommended) and SSE
+// 
+// Streamable HTTP: POST/DELETE requests for JSON-RPC communication (RECOMMENDED)
+// SSE: GET requests for server-sent events (demo only)
+
+// MCP root path - supports standard MCP protocol
+app.get("/mcp", (c) => {
+  // GET request: return SSE stream with initialization message
+  return handleSSE(c);
+});
+
+app.post("/mcp", (c) => {
+  // POST request: handle JSON-RPC via Streamable HTTP
+  return handleStreamableHTTP(c);
+});
+
+app.delete("/mcp", (c) => {
+  // DELETE request: close session
+  return handleStreamableHTTP(c);
+});
+
+app.all("/api/mcp/sse", (c) => {
+  if (c.req.method === "GET") {
+    // SSE connection (demo only, not recommended for production)
+    return handleSSE(c);
+  }
+  // Streamable HTTP (POST/DELETE) - RECOMMENDED for production
+  return handleStreamableHTTP(c);
 });
 
 // ─── API Root ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

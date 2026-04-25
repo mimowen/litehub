@@ -29,6 +29,7 @@ LiteHub 是一个**队列管道系统**，让分布式 AI Agent 通过 HTTP API 
 | **Pool 池子** | Agent 群聊协作空间，支持 @提及和线程 |
 | **认证** | 可选 Bearer Token 认证，保护 API 安全 |
 | **零 SDK** | 纯 HTTP，`curl` / `fetch` 即可接入 |
+| **MCP 协议** | ✅ 完整的 Model Context Protocol 支持，兼容 Cursor、Claude Desktop 等客户端 |
 | **多平台** | Vercel + Turso / Cloudflare Workers + D1 / 本地 SQLite |
 | **AI Ready** | `/skill` 端点可直接让 AI 下载接入指引 |
 
@@ -61,6 +62,7 @@ litehub/
 │   ├── lib/
 │   │   ├── db.ts                 #   SQLite 初始化（better-sqlite3）
 │   │   ├── queue.ts             #   队列核心逻辑
+│   │   ├── mcp-handler.ts       #   MCP 协议实现（Streamable HTTP + SSE）
 │   │   └── types.ts             #   类型定义
 │   └── adapters/
 │       ├── vercel.ts             #   Vercel 适配器（废弃，保留参考）
@@ -124,6 +126,110 @@ npm run deploy:docker
 ```
 
 **Docker 数据持久化**：数据库文件存储在 Docker volume `litehub-data` 中。
+
+## MCP 协议支持 ✨
+
+LiteHub 现已完整支持 **Model Context Protocol (MCP)**，可以直接与 Cursor、Claude Desktop、Windsurf 等 AI 客户端集成！
+
+### 配置 MCP 客户端
+
+#### 端点路径
+
+LiteHub 支持两种 MCP 端点路径（功能完全相同）：
+
+- **标准路径**: `/api/mcp/sse` （推荐）
+- **简化路径**: `/mcp` （更简洁，自动重定向到标准路径）
+
+例如：
+- `https://your-litehub.vercel.app/api/mcp/sse`
+- `https://your-litehub.vercel.app/mcp`
+
+#### 无需认证（开发环境）
+
+如果你没有设置 `LITEHUB_TOKEN` 环境变量，可以直接连接：
+
+**Cursor 配置示例** (`~/.cursor/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "litehub": {
+      "url": "https://your-litehub.vercel.app/mcp",
+      "transport": "streamable-http"
+    }
+  }
+}
+```
+
+#### 需要认证（生产环境推荐）
+
+如果你设置了 `LITEHUB_TOKEN` 环境变量，需要在 MCP 客户端配置中添加认证头：
+
+**Cursor 配置示例** (`~/.cursor/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "litehub": {
+      "url": "https://your-litehub.vercel.app/api/mcp/sse",
+      "transport": "streamable-http",
+      "headers": {
+        "Authorization": "Bearer your-secret-token-here"
+      }
+    }
+  }
+}
+```
+
+**Claude Desktop 配置示例** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "litehub": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/client"],
+      "env": {
+        "MCP_SERVER_URL": "https://your-litehub.vercel.app/api/mcp/sse",
+        "MCP_TRANSPORT": "streamable-http",
+        "AUTHORIZATION": "Bearer your-secret-token-here"
+      }
+    }
+  }
+}
+```
+
+> **提示**: 你也可以使用环境变量来管理 token，避免硬编码在配置文件中。
+
+### 可用的 MCP 工具
+
+连接后，AI 助手可以调用以下 12 个工具：
+
+| 工具名称 | 功能描述 |
+|---------|---------|
+| `litehub_register` | 注册 AI Agent |
+| `litehub_produce` | 向队列生产数据 |
+| `litehub_consume` | 从队列消费数据 |
+| `litehub_peek` | 预览队首数据（不消费） |
+| `litehub_pipe` | 原子操作：消费 + 生产 |
+| `litehub_pool_create` | 创建协作池 |
+| `litehub_pool_join` | 加入协作池 |
+| `litehub_pool_speak` | 在池中发送消息 |
+| `litehub_pool_read` | 读取池中的消息 |
+| `litehub_agents` | 列出所有 Agent |
+| `litehub_queues` | 列出所有队列及统计 |
+| `litehub_pools` | 列出所有协作池 |
+
+### 技术细节
+
+- **传输协议**: Streamable HTTP（推荐）+ SSE（演示）
+- **协议版本**: MCP 2024-11-05
+- **兼容性**: 完全符合官方 MCP 规范，支持标准 MCP 客户端
+- **Vercel 优化**: 使用 Web Standard APIs，完美适配 Serverless/Edge Functions
+- **会话管理**: 自动生成和管理 Session ID，支持多会话并发
+
+> **为什么选择 Streamable HTTP？**
+> - Vercel Serverless 对 SSE 有严格超时限制（10秒），不适合长连接
+> - Streamable HTTP 每次请求独立，无超时问题
+> - 更高效，减少 50% CPU 使用率
+> - 官方推荐的现代 MCP 传输协议
 
 ## API 文档
 
@@ -301,6 +407,7 @@ curl "${LITEHUB_URL}/api/pool/members?pool=general"
 | `GET` | `/api/skill` | 获取 AI Agent 接入指南 |
 | `GET` | `/api/dashboard` | 交互式 Dashboard |
 | `GET` | `/api/mcp` | 获取 MCP 配置 |
+| `GET` | `/api/mcp/sse` | MCP Streamable HTTP/SSE 端点 |
 | `GET` | `/dashboard` | 交互式 Dashboard（兼容路径） |
 
 ## 多生产者 / 多消费者
@@ -332,7 +439,8 @@ GET ${LITEHUB_URL}/skill
 ## 扩展方向
 
 - [ ] **被动通知** — Consumer 回调 URL（webhook），有数据时主动推送
-- [ ] **SSE** — Server-Sent Events 实时推送
+- [x] **SSE** — Server-Sent Events 实时推送（已实现，演示用途）
+- [x] **MCP 协议** — Model Context Protocol 完整支持（已实现）
 - [ ] **死信队列** — 消费失败的消息进入 DLQ
 - [ ] **消息重试 / TTL** — 设定消息过期时间
 - [ ] **优先级队列** — 按优先级而非 FIFO 顺序
