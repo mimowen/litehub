@@ -95,14 +95,14 @@ async function handleAgentRegister(req: Request): Promise<Response> {
 // POST /api/agent/produce
 async function handleProduce(req: Request): Promise<Response> {
   const b = await body(req);
-  const { queue, producerId, data, contentType, metadata, lineage } = b;
-  if (!queue || !producerId || data === undefined) return json({ ok: false, error: "Missing required fields" }, 400);
+  const { queue, agentId, data, contentType, metadata, lineage } = b;
+  if (!queue || !agentId || data === undefined) return json({ ok: false, error: "Missing required fields: queue, agentId, data" }, 400);
   const id = crypto.randomUUID();
   const size = new Blob([data]).size;
   const db = await getDb();
   await db.execute({
     sql: `INSERT INTO pointers (id, queue, producer_id, data, size, content_type, metadata, lineage) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: [id, queue, producerId, data, size, contentType || "text/plain", JSON.stringify(metadata || {}), JSON.stringify(lineage || [])],
+    args: [id, queue, agentId, data, size, contentType || "text/plain", JSON.stringify(metadata || {}), JSON.stringify(lineage || [])],
   });
   return json({ ok: true, id, queue });
 }
@@ -138,7 +138,7 @@ async function handleConsume(req: Request): Promise<Response> {
 // POST /api/agent/pipe
 async function handlePipe(req: Request): Promise<Response> {
   const b = await body(req);
-  const { pointerId, targetQueue, processorId } = b;
+  const { pointerId, targetQueue, agentId } = b;
   if (!pointerId || !targetQueue) return json({ ok: false, error: "Missing pointerId or targetQueue" }, 400);
   const db = await getDb();
   const rs = await db.execute({ sql: "SELECT * FROM pointers WHERE id = ?", args: [pointerId] });
@@ -146,7 +146,7 @@ async function handlePipe(req: Request): Promise<Response> {
   const row = rs.rows[0] as any;
   const newId = crypto.randomUUID();
   const lineage = JSON.parse(row.lineage || "[]");
-  if (processorId && !lineage.includes(processorId)) lineage.push(processorId);
+  if (agentId && !lineage.includes(agentId)) lineage.push(agentId);
   await db.execute({
     sql: `INSERT INTO pointers (id, queue, producer_id, data, size, content_type, metadata, lineage) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [newId, targetQueue, row.producer_id, row.data, row.size, row.content_type, row.metadata, JSON.stringify(lineage)],
@@ -363,7 +363,7 @@ async function handleDashboard(_req: Request): Promise<Response> {
       const data = document.getElementById('testData').value;
       const res = await fetch('/api/agent/produce', {
         method: 'POST', headers: headers(),
-        body: JSON.stringify({ queue, producerId: 'dashboard', data })
+        body: JSON.stringify({ queue, agentId: 'dashboard', data })
       });
       const json = await res.json();
       document.getElementById('result').textContent = JSON.stringify(json, null, 2);
@@ -404,13 +404,13 @@ const MCP_TOOLS = [
       type: "object",
       properties: {
         queue: { type: "string", description: "目标队列名称" },
-        producerId: { type: "string", description: "生产者 ID" },
+        agentId: { type: "string", description: "Agent ID" },
         data: { description: "要生产的数据，可以是字符串或对象" },
         contentType: { type: "string", description: "内容类型，默认 text/plain" },
         metadata: { type: "object", description: "元数据，可选" },
         lineage: { type: "array", items: { type: "string" }, description: "溯源信息，可选" }
       },
-      required: ["queue", "producerId", "data"]
+      required: ["queue", "agentId", "data"]
     }
   },
   {
@@ -445,7 +445,7 @@ const MCP_TOOLS = [
       properties: {
         pointerId: { type: "string", description: "源消息 ID" },
         targetQueue: { type: "string", description: "目标队列名称" },
-        processorId: { type: "string", description: "处理器 ID，可选" }
+        agentId: { type: "string", description: "Agent ID，可选" }
       },
       required: ["pointerId", "targetQueue"]
     }
