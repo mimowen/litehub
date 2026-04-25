@@ -65,6 +65,7 @@ const DDL = `
 let _client: Client | null = null;
 let _initialized = false;
 
+// DDL: 建表 + 缺失列的 ALTER（幂等，可重复执行）
 const DDLs = [
   `CREATE TABLE IF NOT EXISTS queues (
     name TEXT PRIMARY KEY,
@@ -91,6 +92,8 @@ const DDLs = [
     lineage TEXT DEFAULT '[]',
     created_at TEXT DEFAULT (datetime('now'))
   )`,
+  // 给已有 pointers 表补 lineage 列（ALTER TABLE 幂等写法）
+  `ALTER TABLE pointers ADD COLUMN lineage TEXT DEFAULT '[]'`,
   `CREATE INDEX IF NOT EXISTS idx_pointers_queue ON pointers(queue)`,
   `CREATE INDEX IF NOT EXISTS idx_pointers_queue_status ON pointers(queue, status)`,
   `CREATE TABLE IF NOT EXISTS pools (
@@ -122,7 +125,14 @@ const DDLs = [
 async function initDb(client: Client) {
   if (_initialized) return;
   for (const ddl of DDLs) {
-    await client.execute(ddl);
+    try {
+      await client.execute(ddl);
+    } catch (e: any) {
+      // 忽略“列已存在”等幂等错误，其他错误抛出
+      if (!e?.message?.includes('already exists') && !e?.message?.includes('duplicate column')) {
+        throw e;
+      }
+    }
   }
   _initialized = true;
 }
