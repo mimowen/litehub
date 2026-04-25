@@ -28,7 +28,7 @@ async function handleIndex(_req: Request): Promise<Response> {
 
 // GET /api/agents
 async function handleAgents(_req: Request): Promise<Response> {
-  const db = getDb();
+  const db = await getDb();
   const rs = await db.execute("SELECT * FROM agents ORDER BY registered_at DESC");
   const agents = rs.rows.map((r: any) => ({
     agentId: r.agent_id, name: r.name, role: r.role,
@@ -39,7 +39,7 @@ async function handleAgents(_req: Request): Promise<Response> {
 
 // GET /api/queues
 async function handleQueues(_req: Request): Promise<Response> {
-  const db = getDb();
+  const db = await getDb();
   const rs = await db.execute("SELECT queue, COUNT(*) as pending FROM pointers WHERE status = 'pending' GROUP BY queue ORDER BY queue");
   const queues = rs.rows.map((r: any) => ({ name: r.queue, pending: r.pending }));
   return json({ ok: true, queues });
@@ -47,7 +47,7 @@ async function handleQueues(_req: Request): Promise<Response> {
 
 // GET /api/pools
 async function handlePools(_req: Request): Promise<Response> {
-  const db = getDb();
+  const db = await getDb();
   const rs = await db.execute(`
     SELECT p.*, COUNT(pm.agent_id) as member_count
     FROM pools p LEFT JOIN pool_members pm ON p.name = pm.pool
@@ -66,7 +66,7 @@ async function handlePeek(req: Request): Promise<Response> {
   const queue = url.searchParams.get("queue");
   if (!queue) return json({ ok: false, error: "Missing queue" }, 400);
   const limit = parseInt(url.searchParams.get("limit") || "10");
-  const db = getDb();
+  const db = await getDb();
   const rs = await db.execute({
     sql: "SELECT * FROM pointers WHERE queue = ? AND status = 'pending' ORDER BY created_at ASC LIMIT ?",
     args: [queue, limit],
@@ -84,7 +84,7 @@ async function handleAgentRegister(req: Request): Promise<Response> {
   const b = await body(req);
   const { agentId, name, role, queues, pollInterval } = b;
   if (!agentId || !name || !role) return json({ ok: false, error: "Missing required fields: agentId, name, role" }, 400);
-  const db = getDb();
+  const db = await getDb();
   await db.execute({
     sql: "INSERT OR REPLACE INTO agents (agent_id, name, role, queues, poll_interval) VALUES (?, ?, ?, ?, ?)",
     args: [agentId, name, role, JSON.stringify(queues || []), pollInterval || 0],
@@ -99,7 +99,7 @@ async function handleProduce(req: Request): Promise<Response> {
   if (!queue || !producerId || data === undefined) return json({ ok: false, error: "Missing required fields" }, 400);
   const id = crypto.randomUUID();
   const size = new Blob([data]).size;
-  const db = getDb();
+  const db = await getDb();
   await db.execute({
     sql: `INSERT INTO pointers (id, queue, producer_id, data, size, content_type, metadata, lineage) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [id, queue, producerId, data, size, contentType || "text/plain", JSON.stringify(metadata || {}), JSON.stringify(lineage || [])],
@@ -112,7 +112,7 @@ async function handleConsume(req: Request): Promise<Response> {
   const b = await body(req);
   const { queue, agentId } = b;
   if (!queue || !agentId) return json({ ok: false, error: "Missing queue or agentId" }, 400);
-  const db = getDb();
+  const db = await getDb();
   const rs = await db.execute({
     sql: "SELECT * FROM pointers WHERE queue = ? AND status = 'pending' ORDER BY created_at ASC LIMIT 10",
     args: [queue],
@@ -140,7 +140,7 @@ async function handlePipe(req: Request): Promise<Response> {
   const b = await body(req);
   const { pointerId, targetQueue, processorId } = b;
   if (!pointerId || !targetQueue) return json({ ok: false, error: "Missing pointerId or targetQueue" }, 400);
-  const db = getDb();
+  const db = await getDb();
   const rs = await db.execute({ sql: "SELECT * FROM pointers WHERE id = ?", args: [pointerId] });
   if (rs.rows.length === 0) return json({ ok: false, error: "Pointer not found" }, 404);
   const row = rs.rows[0] as any;
@@ -160,7 +160,7 @@ async function handlePoolCreate(req: Request): Promise<Response> {
   const { name, description, guidelines, maxMembers } = b;
   if (!name) return json({ ok: false, error: "Missing name" }, 400);
   const defaultGuidelines = "You are a collaborative agent in this Pool. Share progress transparently. Reference others' work. Do not command other agents.";
-  const db = getDb();
+  const db = await getDb();
   await db.execute({
     sql: "INSERT OR REPLACE INTO pools (name, description, guidelines, max_members) VALUES (?, ?, ?, ?)",
     args: [name, description || "", guidelines || defaultGuidelines, maxMembers || 20],
@@ -173,7 +173,7 @@ async function handlePoolJoin(req: Request): Promise<Response> {
   const b = await body(req);
   const { pool, agentId } = b;
   if (!pool || !agentId) return json({ ok: false, error: "Missing pool or agentId" }, 400);
-  const db = getDb();
+  const db = await getDb();
   const poolRs = await db.execute({ sql: "SELECT max_members FROM pools WHERE name = ?", args: [pool] });
   if (poolRs.rows.length === 0) return json({ ok: false, error: "Pool not found" }, 404);
   const maxMembers = (poolRs.rows[0] as any).max_members;
@@ -188,7 +188,7 @@ async function handlePoolLeave(req: Request): Promise<Response> {
   const b = await body(req);
   const { pool, agentId } = b;
   if (!pool || !agentId) return json({ ok: false, error: "Missing pool or agentId" }, 400);
-  const db = getDb();
+  const db = await getDb();
   await db.execute({ sql: "DELETE FROM pool_members WHERE pool = ? AND agent_id = ?", args: [pool, agentId] });
   return json({ ok: true });
 }
@@ -199,7 +199,7 @@ async function handlePoolSpeak(req: Request): Promise<Response> {
   const { pool, agentId, content, replyTo, tags, metadata } = b;
   if (!pool || !agentId || !content) return json({ ok: false, error: "Missing required fields" }, 400);
   const id = crypto.randomUUID();
-  const db = getDb();
+  const db = await getDb();
   await db.execute({
     sql: "INSERT INTO pool_messages (id, pool, agent_id, content, reply_to, tags, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
     args: [id, pool, agentId, content, replyTo || null, JSON.stringify(tags || []), JSON.stringify(metadata || {})],
@@ -215,7 +215,7 @@ async function handlePoolMessages(req: Request): Promise<Response> {
   const limit = parseInt(url.searchParams.get("limit") || "50");
   const since = url.searchParams.get("since");
   const tag = url.searchParams.get("tag");
-  const db = getDb();
+  const db = await getDb();
   let sql = "SELECT * FROM pool_messages WHERE pool = ?";
   const args: any[] = [pool];
   if (since) { sql += " AND created_at > ?"; args.push(since); }
@@ -238,7 +238,7 @@ async function handlePoolMembers(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const pool = url.searchParams.get("pool");
   if (!pool) return json({ ok: false, error: "Missing pool" }, 400);
-  const db = getDb();
+  const db = await getDb();
   const rs = await db.execute({ sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool = ? ORDER BY joined_at", args: [pool] });
   const members = rs.rows.map((r: any) => ({ agentId: r.agent_id, joinedAt: r.joined_at }));
   return json({ ok: true, pool, members });
