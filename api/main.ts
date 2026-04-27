@@ -8,6 +8,7 @@ export const config = {
 // 所有逻辑内聚于此文件 + vercel-db.ts，确保 Vercel 打包时完整包含
 
 import { getDb, validateAuth, json, body } from "./vercel-db";
+import type { Client } from "@libsql/client/http";
 
 // ─── CORS ──────────────────────────────────────────────────────────────────
 const CORS = {
@@ -17,6 +18,14 @@ const CORS = {
 };
 
 // ─── Route handlers ────────────────────────────────────────────────────────
+
+// 校验 Agent 是否已注册
+async function ensureAgent(db: Client, agentId: string): Promise<Response | null> {
+  if (!agentId) return json({ ok: false, error: "Missing agentId" }, 400);
+  const rs = await db.execute({ sql: "SELECT agent_id FROM agents WHERE agent_id = ?", args: [agentId] });
+  if (rs.rows.length === 0) return json({ ok: false, error: "Agent not registered. Call litehub_register first." }, 403);
+  return null; // null = 校验通过
+}
 
 // GET /api
 async function handleIndex(_req: Request): Promise<Response> {
@@ -40,8 +49,8 @@ async function handleAgents(_req: Request): Promise<Response> {
 // GET /api/queues
 async function handleQueues(_req: Request): Promise<Response> {
   const db = await getDb();
-  const rs = await db.execute("SELECT queue, COUNT(*) as pending FROM pointers WHERE status = 'pending' GROUP BY queue ORDER BY queue");
-  const queues = rs.rows.map((r: any) => ({ name: r.queue, pending: r.pending }));
+  const rs = await db.execute("SELECT q.name, q.description, q.creator_id, q.created_at, COUNT(p.id) as pending FROM queues q LEFT JOIN pointers p ON q.name = p.queue AND p.status = 'pending' GROUP BY q.name ORDER BY q.name");
+  const queues = rs.rows.map((r: any) => ({ name: r.name, description: r.description, creatorId: r.creator_id, pending: r.pending, createdAt: r.created_at }));
   return json({ ok: true, queues });
 }
 
@@ -55,7 +64,7 @@ async function handlePools(_req: Request): Promise<Response> {
   `);
   const pools = rs.rows.map((r: any) => ({
     name: r.name, description: r.description, guidelines: r.guidelines,
-    maxMembers: r.max_members, memberCount: r.member_count, createdAt: r.created_at,
+    maxMembers: r.max_members, memberCount: r.member_count, creatorId: r.creator_id, createdAt: r.created_at,
   }));
   return json({ ok: true, pools });
 }
@@ -67,6 +76,9 @@ async function handlePeek(req: Request): Promise<Response> {
   if (!queue) return json({ ok: false, error: "Missing queue" }, 400);
   const limit = parseInt(url.searchParams.get("limit") || "10");
   const db = await getDb();
+  // 校验队列是否存在
+  const qRs = await db.execute({ sql: "SELECT name FROM queues WHERE name = ?", args: [queue] });
+  if (qRs.rows.length === 0) return json({ ok: false, error: "Queue not found. Create it during registration first." }, 404);
   const rs = await db.execute({
     sql: "SELECT * FROM pointers WHERE queue = ? AND status = 'pending' ORDER BY created_at ASC LIMIT ?",
     args: [queue, limit],
@@ -82,14 +94,60 @@ async function handlePeek(req: Request): Promise<Response> {
 // POST /api/agent/register
 async function handleAgentRegister(req: Request): Promise<Response> {
   const b = await body(req);
-  const { agentId, name, role, queues, pollInterval } = b;
+  const { agentId, name, role, queues, pools, pollInterval } = b;
   if (!agentId || !name || !role) return json({ ok: false, error: "Missing required fields: agentId, name, role" }, 400);
   const db = await getDb();
+
+  // 注册 Agent
+  const queueNames: string[] = [];
+  if (Array.isArray(queues)) {
+    for (const q of queues) {
+      if (typeof q === "string") {
+        queueNames.push(q);
+      } else if (q && q.name) {
+        queueNames.push(q.name);
+      }
+    }
+  }
   await db.execute({
     sql: "INSERT OR REPLACE INTO agents (agent_id, name, role, queues, poll_interval) VALUES (?, ?, ?, ?, ?)",
-    args: [agentId, name, role, JSON.stringify(queues || []), pollInterval || 0],
+    args: [agentId, name, role, JSON.stringify(queueNames), pollInterval || 0],
   });
-  return json({ ok: true, agentId });
+
+  // 注册阶段自动创建队列（带 description + creator_id）
+  const createdQueues: string[] = [];
+  if (Array.isArray(queues)) {
+    for (const q of queues) {
+      const qName = typeof q === "string" ? q : q.name;
+      const qDesc = typeof q === "string" ? "" : (q.description || "");
+      if (!qName) continue;
+      try {
+        await db.execute({
+          sql: "INSERT OR IGNORE INTO queues (name, description, creator_id) VALUES (?, ?, ?)",
+          args: [qName, qDesc, agentId],
+        });
+        createdQueues.push(qName);
+      } catch { /* 忽略重复 */ }
+    }
+  }
+
+  // 注册阶段自动创建 Pool（带 description + creator_id）
+  const createdPools: string[] = [];
+  if (Array.isArray(pools)) {
+    for (const p of pools) {
+      if (!p.name) continue;
+      const defaultGuidelines = "You are a collaborative agent in this Pool. Share progress transparently. Reference others' work. Do not command other agents.";
+      try {
+        await db.execute({
+          sql: "INSERT OR IGNORE INTO pools (name, description, guidelines, max_members, creator_id) VALUES (?, ?, ?, ?, ?)",
+          args: [p.name, p.description || "", p.guidelines || defaultGuidelines, p.maxMembers || 20, agentId],
+        });
+        createdPools.push(p.name);
+      } catch { /* 忽略重复 */ }
+    }
+  }
+
+  return json({ ok: true, agentId, createdQueues, createdPools });
 }
 
 // POST /api/agent/produce
@@ -97,9 +155,14 @@ async function handleProduce(req: Request): Promise<Response> {
   const b = await body(req);
   const { queue, agentId, data, contentType, metadata, lineage } = b;
   if (!queue || !agentId || data === undefined) return json({ ok: false, error: "Missing required fields: queue, agentId, data" }, 400);
+  const db = await getDb();
+  const agentErr = await ensureAgent(db, agentId);
+  if (agentErr) return agentErr;
+  // 校验队列是否存在
+  const qRs = await db.execute({ sql: "SELECT name FROM queues WHERE name = ?", args: [queue] });
+  if (qRs.rows.length === 0) return json({ ok: false, error: "Queue not found. Create it during registration first." }, 404);
   const id = crypto.randomUUID();
   const size = new Blob([data]).size;
-  const db = await getDb();
   await db.execute({
     sql: `INSERT INTO pointers (id, queue, producer_id, data, size, content_type, metadata, lineage) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [id, queue, agentId, data, size, contentType || "text/plain", JSON.stringify(metadata || {}), JSON.stringify(lineage || [])],
@@ -113,6 +176,11 @@ async function handleConsume(req: Request): Promise<Response> {
   const { queue, agentId } = b;
   if (!queue || !agentId) return json({ ok: false, error: "Missing queue or agentId" }, 400);
   const db = await getDb();
+  const agentErr = await ensureAgent(db, agentId);
+  if (agentErr) return agentErr;
+  // 校验队列是否存在
+  const qRs = await db.execute({ sql: "SELECT name FROM queues WHERE name = ?", args: [queue] });
+  if (qRs.rows.length === 0) return json({ ok: false, error: "Queue not found. Create it during registration first." }, 404);
   const rs = await db.execute({
     sql: "SELECT * FROM pointers WHERE queue = ? AND status = 'pending' ORDER BY created_at ASC LIMIT 10",
     args: [queue],
@@ -141,6 +209,10 @@ async function handlePipe(req: Request): Promise<Response> {
   const { pointerId, targetQueue, agentId } = b;
   if (!pointerId || !targetQueue) return json({ ok: false, error: "Missing pointerId or targetQueue" }, 400);
   const db = await getDb();
+  if (agentId) {
+    const agentErr = await ensureAgent(db, agentId);
+    if (agentErr) return agentErr;
+  }
   const rs = await db.execute({ sql: "SELECT * FROM pointers WHERE id = ?", args: [pointerId] });
   if (rs.rows.length === 0) return json({ ok: false, error: "Pointer not found" }, 404);
   const row = rs.rows[0] as any;
@@ -157,13 +229,14 @@ async function handlePipe(req: Request): Promise<Response> {
 // POST /api/pool/create
 async function handlePoolCreate(req: Request): Promise<Response> {
   const b = await body(req);
-  const { name, description, guidelines, maxMembers } = b;
+  const { name, description, guidelines, maxMembers, agentId } = b;
   if (!name) return json({ ok: false, error: "Missing name" }, 400);
+  if (!description) return json({ ok: false, error: "Missing description — please describe what this Pool is for" }, 400);
   const defaultGuidelines = "You are a collaborative agent in this Pool. Share progress transparently. Reference others' work. Do not command other agents.";
   const db = await getDb();
   await db.execute({
-    sql: "INSERT OR REPLACE INTO pools (name, description, guidelines, max_members) VALUES (?, ?, ?, ?)",
-    args: [name, description || "", guidelines || defaultGuidelines, maxMembers || 20],
+    sql: "INSERT OR REPLACE INTO pools (name, description, guidelines, max_members, creator_id) VALUES (?, ?, ?, ?, ?)",
+    args: [name, description, guidelines || defaultGuidelines, maxMembers || 20, agentId || ""],
   });
   return json({ ok: true, name });
 }
@@ -174,6 +247,8 @@ async function handlePoolJoin(req: Request): Promise<Response> {
   const { pool, agentId } = b;
   if (!pool || !agentId) return json({ ok: false, error: "Missing pool or agentId" }, 400);
   const db = await getDb();
+  const agentErr = await ensureAgent(db, agentId);
+  if (agentErr) return agentErr;
   const poolRs = await db.execute({ sql: "SELECT max_members FROM pools WHERE name = ?", args: [pool] });
   if (poolRs.rows.length === 0) return json({ ok: false, error: "Pool not found" }, 404);
   const maxMembers = (poolRs.rows[0] as any).max_members;
@@ -189,6 +264,8 @@ async function handlePoolLeave(req: Request): Promise<Response> {
   const { pool, agentId } = b;
   if (!pool || !agentId) return json({ ok: false, error: "Missing pool or agentId" }, 400);
   const db = await getDb();
+  const agentErr = await ensureAgent(db, agentId);
+  if (agentErr) return agentErr;
   await db.execute({ sql: "DELETE FROM pool_members WHERE pool = ? AND agent_id = ?", args: [pool, agentId] });
   return json({ ok: true });
 }
@@ -198,8 +275,13 @@ async function handlePoolSpeak(req: Request): Promise<Response> {
   const b = await body(req);
   const { pool, agentId, content, replyTo, tags, metadata } = b;
   if (!pool || !agentId || !content) return json({ ok: false, error: "Missing required fields" }, 400);
-  const id = crypto.randomUUID();
   const db = await getDb();
+  const agentErr = await ensureAgent(db, agentId);
+  if (agentErr) return agentErr;
+  // 校验 Pool 是否存在
+  const poolRs = await db.execute({ sql: "SELECT name FROM pools WHERE name = ?", args: [pool] });
+  if (poolRs.rows.length === 0) return json({ ok: false, error: "Pool not found" }, 404);
+  const id = crypto.randomUUID();
   await db.execute({
     sql: "INSERT INTO pool_messages (id, pool, agent_id, content, reply_to, tags, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
     args: [id, pool, agentId, content, replyTo || null, JSON.stringify(tags || []), JSON.stringify(metadata || {})],
@@ -384,14 +466,44 @@ async function handleDashboard(_req: Request): Promise<Response> {
 const MCP_TOOLS = [
   {
     name: "litehub_register",
-    description: "注册一个新的 Agent 到 LiteHub",
+    description: "注册一个新的 Agent 到 LiteHub，可同时创建队列和 Pool",
     inputSchema: {
       type: "object",
       properties: {
         agentId: { type: "string", description: "Agent 的唯一标识符" },
         name: { type: "string", description: "Agent 的显示名称" },
         role: { type: "string", description: "Agent 的角色: producer, consumer, 或 both" },
-        queues: { type: "array", items: { type: "string" }, description: "Agent 关联的队列列表" },
+        queues: {
+          type: "array",
+          description: "Agent 关联的队列列表，支持字符串或对象",
+          items: {
+            oneOf: [
+              { type: "string" },
+              {
+                type: "object",
+                properties: {
+                  name: { type: "string", description: "队列名称" },
+                  description: { type: "string", description: "队列描述，说明这个队列是做什么的" }
+                },
+                required: ["name"]
+              }
+            ]
+          }
+        },
+        pools: {
+          type: "array",
+          description: "Agent 创建的 Pool 列表",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Pool 名称" },
+              description: { type: "string", description: "Pool 描述，说明这个 Pool 是做什么的" },
+              guidelines: { type: "string", description: "Pool 指导原则，可选" },
+              maxMembers: { type: "number", description: "最大成员数，默认 20" }
+            },
+            required: ["name", "description"]
+          }
+        },
         pollInterval: { type: "number", description: "轮询间隔（毫秒），可选" }
       },
       required: ["agentId", "name", "role"]
@@ -457,11 +569,12 @@ const MCP_TOOLS = [
       type: "object",
       properties: {
         name: { type: "string", description: "Pool 名称" },
-        description: { type: "string", description: "Pool 描述，可选" },
+        description: { type: "string", description: "Pool 描述，说明这个 Pool 是做什么的（必填）" },
         guidelines: { type: "string", description: "Pool 指导原则，可选" },
-        maxMembers: { type: "number", description: "最大成员数，默认 20" }
+        maxMembers: { type: "number", description: "最大成员数，默认 20" },
+        agentId: { type: "string", description: "创建者 Agent ID" }
       },
-      required: ["name"]
+      required: ["name", "description", "agentId"]
     }
   },
   {
@@ -540,6 +653,17 @@ const MCP_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {}
+    }
+  },
+  {
+    name: "litehub_my_resources",
+    description: "查询当前 Agent 创建的所有队列和 Pool，方便智能体了解自己之前创建了哪些资源",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "Agent ID" }
+      },
+      required: ["agentId"]
     }
   }
 ];
@@ -646,6 +770,12 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   }
 }
 
+// ─── Shared JSON helper (module-level) ───────────────────────────────────
+const getJson = async (res: Response) => {
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return { raw: text }; }
+};
+
 async function executeMcpTool(req: Request, toolName: string, args: any): Promise<any> {
   const baseUrl = new URL(req.url).origin;
 
@@ -656,7 +786,8 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args)
       });
-      return await handleAgentRegister(mockReq);
+      const res = await handleAgentRegister(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_produce": {
@@ -665,7 +796,8 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args)
       });
-      return await handleProduce(mockReq);
+      const res = await handleProduce(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_consume": {
@@ -674,12 +806,14 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args)
       });
-      return await handleConsume(mockReq);
+      const res = await handleConsume(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_peek": {
       const mockReq = new Request(`${baseUrl}/api/peek?queue=${args.queue}&limit=${args.limit || 10}`);
-      return await handlePeek(mockReq);
+      const res = await handlePeek(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_pipe": {
@@ -688,7 +822,8 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args)
       });
-      return await handlePipe(mockReq);
+      const res = await handlePipe(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_pool_create": {
@@ -697,7 +832,8 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args)
       });
-      return await handlePoolCreate(mockReq);
+      const res = await handlePoolCreate(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_pool_join": {
@@ -706,7 +842,8 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args)
       });
-      return await handlePoolJoin(mockReq);
+      const res = await handlePoolJoin(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_pool_leave": {
@@ -715,7 +852,8 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args)
       });
-      return await handlePoolLeave(mockReq);
+      const res = await handlePoolLeave(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_pool_speak": {
@@ -724,27 +862,48 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args)
       });
-      return await handlePoolSpeak(mockReq);
+      const res = await handlePoolSpeak(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_pool_messages": {
       const mockReq = new Request(`${baseUrl}/api/pool/messages?pool=${args.pool}&limit=${args.limit || 50}${args.since ? `&since=${args.since}` : ""}${args.tag ? `&tag=${args.tag}` : ""}`);
-      return await handlePoolMessages(mockReq);
+      const res = await handlePoolMessages(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_agents": {
       const mockReq = new Request(`${baseUrl}/api/agents`);
-      return await handleAgents(mockReq);
+      const res = await handleAgents(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_queues": {
       const mockReq = new Request(`${baseUrl}/api/queues`);
-      return await handleQueues(mockReq);
+      const res = await handleQueues(mockReq);
+      return await getJson(res);
     }
 
     case "litehub_pools": {
       const mockReq = new Request(`${baseUrl}/api/pools`);
-      return await handlePools(mockReq);
+      const res = await handlePools(mockReq);
+      return await getJson(res);
+    }
+
+    case "litehub_my_resources": {
+      const db = await getDb();
+      const { agentId } = args;
+      if (!agentId) return { ok: false, error: "Missing agentId" };
+      // 校验 Agent 已注册
+      const agentErr = await ensureAgent(db, agentId);
+      if (agentErr) return await getJson(agentErr);
+      // 查询该 Agent 创建的队列
+      const qRs = await db.execute({ sql: "SELECT name, description, created_at FROM queues WHERE creator_id = ? ORDER BY created_at", args: [agentId] });
+      const myQueues = qRs.rows.map((r: any) => ({ name: r.name, description: r.description, createdAt: r.created_at }));
+      // 查询该 Agent 创建的 Pool
+      const pRs = await db.execute({ sql: "SELECT name, description, max_members, created_at FROM pools WHERE creator_id = ? ORDER BY created_at", args: [agentId] });
+      const myPools = pRs.rows.map((r: any) => ({ name: r.name, description: r.description, maxMembers: r.max_members, createdAt: r.created_at }));
+      return { ok: true, agentId, queues: myQueues, pools: myPools };
     }
 
     default:
@@ -775,6 +934,186 @@ async function handleMcpConfig(req: Request): Promise<Response> {
   });
 }
 
+// ─── A2A Protocol Handlers (Google Agent-to-Agent) ────────────────────────
+// Maps to existing Queue operations (produce/consume)
+
+async function handleA2ACreateTask(req: Request): Promise<Response> {
+  try {
+    const body = await req.json();
+    const { taskId, agentId, targetAgentId, name, input, messageId, metadata } = body as { taskId?: string; agentId: string; targetAgentId?: string; name?: string; input?: any; messageId?: string; metadata?: any };
+    const db = await getDb();
+    
+    // Validate agent
+    const agentErr = await ensureAgent(db, agentId);
+    if (agentErr) return await getJson(agentErr);
+    
+    // Use existing queue/pointer system
+    const queueName = `a2a:${targetAgentId || agentId}:${taskId || crypto.randomUUID()}`;
+    
+    await db.execute({
+      sql: "INSERT OR IGNORE INTO pointers (queue_name, agent_id, status, priority) VALUES (?, ?, 'pending', ?)",
+      args: [queueName, agentId, metadata?.priority ?? 5]
+    });
+    
+    // Create the task via produce
+    const produceReq = new Request(req.url.replace('/a2a/tasks', '/agent/produce'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': req.headers.get('Authorization') || '' },
+      body: JSON.stringify({ agentId, queueName, payload: { taskId, name, input, messageId, metadata } })
+    });
+    return await handleProduce(produceReq);
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+async function handleA2ACancelTask(req: Request): Promise<Response> {
+  try {
+    const { taskId, agentId } = await req.json() as { taskId: string; agentId: string };
+    const db = await getDb();
+    const agentErr = await ensureAgent(db, agentId);
+    if (agentErr) return await getJson(agentErr);
+    
+    const rs = await db.execute({ 
+      sql: "UPDATE pointers SET status = 'cancelled' WHERE queue_name LIKE ? AND agent_id = ? AND status = 'pending'",
+      args: [`a2a:%:${taskId}`, agentId]
+    });
+    return json({ ok: true, cancelled: rs.rowsAffected ?? rs.rows?.length ?? 0 });
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+async function handleA2ASetPushNotification(req: Request): Promise<Response> {
+  try {
+    const body = await req.json();
+    const { agentId, taskId, webhookUrl, secret } = body as { agentId: string; taskId: string; webhookUrl: string; secret?: string };
+    const db = await getDb();
+    const agentErr = await ensureAgent(db, agentId);
+    if (agentErr) return await getJson(agentErr);
+    
+    // Store push subscription in push_subscriptions table
+    await db.execute({
+      sql: `INSERT OR REPLACE INTO push_subscriptions (agent_id, scope, scope_name, webhook_url, secret, created_at)
+            VALUES (?, 'task', ?, ?, ?, datetime('now'))`,
+      args: [agentId, taskId, webhookUrl, secret ?? '']
+    });
+    return json({ ok: true, message: 'Push notification configured for task' });
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+// ─── ACP Protocol Handlers (Agent Communication Protocol) ─────────────────
+// Maps to existing Pool operations
+
+async function handleACPCreateRun(req: Request): Promise<Response> {
+  try {
+    const body = await req.json();
+    const { agentId, runId, contextId, name, participants } = body as { agentId: string; runId?: string; contextId?: string; name?: string; participants?: number };
+    const db = await getDb();
+    const agentErr = await ensureAgent(db, agentId);
+    if (agentErr) return await getJson(agentErr);
+    
+    // Create a Pool as a "run"
+    const poolName = `acp:${runId || crypto.randomUUID()}`;
+    const createReq = new Request(req.url.replace('/acp/runs', '/pool/create'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': req.headers.get('Authorization') || '' },
+      body: JSON.stringify({ agentId, name: poolName, description: name ?? '', maxMembers: participants ?? 10 })
+    });
+    return await handlePoolCreate(createReq);
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+async function handleACPCancelRun(req: Request): Promise<Response> {
+  try {
+    const { runId, agentId } = await req.json() as { runId: string; agentId: string };
+    const db = await getDb();
+    const agentErr = await ensureAgent(db, agentId);
+    if (agentErr) return await getJson(agentErr);
+    
+    // Archive the Pool (soft delete)
+    const rs = await db.execute({ 
+      sql: "UPDATE pools SET description = description || ' [cancelled]' WHERE name = ? AND creator_id = ?",
+      args: [`acp:${runId}`, agentId]
+    });
+    return json({ ok: true, cancelled: rs.rowsAffected ?? rs.rows?.length ?? 0 });
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+async function handleACPCreateContext(req: Request): Promise<Response> {
+  try {
+    const body = await req.json();
+    const { agentId, contextId, name, guidelines } = body as { agentId: string; contextId?: string; name?: string; guidelines?: string };
+    const db = await getDb();
+    const agentErr = await ensureAgent(db, agentId);
+    if (agentErr) return await getJson(agentErr);
+    
+    // Create a Pool as a "context"
+    const createReq = new Request(req.url.replace('/acp/contexts', '/pool/create'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': req.headers.get('Authorization') || '' },
+      body: JSON.stringify({ agentId, name: contextId || crypto.randomUUID(), description: name ?? guidelines ?? '' })
+    });
+    return await handlePoolCreate(createReq);
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+async function handleACPJoinContext(req: Request): Promise<Response> {
+  try {
+    const body = await req.json();
+    const { agentId, contextId } = body as { agentId: string; contextId: string };
+    const db = await getDb();
+    const agentErr = await ensureAgent(db, agentId);
+    if (agentErr) return await getJson(agentErr);
+    
+    const joinReq = new Request(req.url.replace('/acp/contexts/join', '/pool/join'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': req.headers.get('Authorization') || '' },
+      body: JSON.stringify({ agentId, poolName: contextId })
+    });
+    return await handlePoolJoin(joinReq);
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+async function handleACPLeaveContext(req: Request): Promise<Response> {
+  try {
+    const body = await req.json();
+    const { agentId, contextId } = body as { agentId: string; contextId: string };
+    const db = await getDb();
+    const agentErr = await ensureAgent(db, agentId);
+    if (agentErr) return await getJson(agentErr);
+    
+    const leaveReq = new Request(req.url.replace('/acp/contexts/leave', '/pool/leave'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': req.headers.get('Authorization') || '' },
+      body: JSON.stringify({ agentId, poolName: contextId })
+    });
+    return await handlePoolLeave(leaveReq);
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+async function handleACPAgents(req: Request): Promise<Response> {
+  // Public endpoint - list all registered agents
+  return handleAgents(req);
+}
+
+async function handleACPGetMessages(req: Request): Promise<Response> {
+  // Public endpoint - get Pool messages
+  return handlePoolMessages(req);
+}
+
 // ─── Route table ───────────────────────────────────────────────────────────
 type Handler = (req: Request) => Promise<Response>;
 
@@ -791,6 +1130,19 @@ const PUBLIC_ROUTES: Record<string, Handler> = {
   "mcp": handleMcpConfig,
   "pool/messages": handlePoolMessages,
   "pool/members": handlePoolMembers,
+  // A2A Protocol (Google Agent-to-Agent)
+  "a2a/tasks": handleA2ACreateTask,
+  "a2a/tasks/cancel": handleA2ACancelTask,
+  "a2a/tasks/pushNotificationConfig/set": handleA2ASetPushNotification,
+  // ACP Protocol (Agent Communication Protocol)
+  "acp/runs": handleACPCreateRun,
+  "acp/runs/cancel": handleACPCancelRun,
+  "acp/contexts": handleACPCreateContext,
+  "acp/contexts/join": handleACPJoinContext,
+  "acp/contexts/leave": handleACPLeaveContext,
+  // ACP read-only (public for polling)
+  "acp/agents": handleACPAgents,
+  "acp/contexts/messages": handleACPGetMessages,
 };
 
 const AUTH_ROUTES: Record<string, Handler> = {
