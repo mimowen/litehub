@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/.well-known/agent-card.json", "destination": "/api/main" },
     { "source": "/api/(.*)", "destination": "/api/main" },
     { "source": "/mcp/(.*)", "destination": "/api/main" },
     { "source": "/mcp", "destination": "/api/main" },
