@@ -17,6 +17,83 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
+// ─── Pattern-based route matcher ──────────────────────────────────────────
+// Matches a path pattern against an actual path, extracting named parameters.
+// e.g. matchRoute("a2a/tasks/{id}", "a2a/tasks/abc123") → { matched: true, params: { id: "abc123" } }
+function matchRoute(pattern: string, path: string): { matched: boolean; params: Record<string, string> } {
+  const pParts = pattern.split("/");
+  const pathParts = path.split("/");
+  if (pParts.length !== pathParts.length) return { matched: false, params: {} };
+  const params: Record<string, string> = {};
+  for (let i = 0; i < pParts.length; i++) {
+    if (pParts[i].startsWith("{") && pParts[i].endsWith("}")) {
+      params[pParts[i].slice(1, -1)] = pathParts[i];
+    } else if (pParts[i] !== pathParts[i]) {
+      return { matched: false, params: {} };
+    }
+  }
+  return { matched: true, params };
+}
+
+// Route definitions with patterns (order matters — most specific first)
+interface RouteEntry {
+  pattern: string;   // e.g. "a2a/tasks/{id}"
+  handler: Handler;
+  auth: boolean;
+}
+
+// Build sorted route list (longer patterns first to avoid partial matches)
+const ROUTE_ENTRIES: RouteEntry[] = [
+  // A2A
+  { pattern: "a2a/tasks/{id}",      handler: handleA2AGetTask,       auth: false },
+  { pattern: "a2a/tasks",           handler: handleA2ACreateTask,    auth: true  },
+  { pattern: "a2a/tasks/cancel",    handler: handleA2ACancelTask,    auth: true  },
+  { pattern: "a2a/tasks/pushNotificationConfig/set", handler: handleA2ASetPushNotification, auth: true },
+  // ACP
+  { pattern: "acp/runs/{id}",       handler: handleACPGetRun,        auth: false },
+  { pattern: "acp/contexts/{id}",   handler: handleACPGetContext,    auth: false },
+  { pattern: "acp/contexts/{id}/messages", handler: handleACPGetContextMessages, auth: false },
+  { pattern: "acp/runs",            handler: handleACPCreateRun,     auth: true  },
+  { pattern: "acp/runs/cancel",     handler: handleACPCancelRun,     auth: true  },
+  { pattern: "acp/contexts",        handler: handleACPCreateContext, auth: true  },
+  { pattern: "acp/contexts/join",   handler: handleACPJoinContext,   auth: true  },
+  { pattern: "acp/contexts/leave",  handler: handleACPLeaveContext,  auth: true  },
+  { pattern: "acp/agents",          handler: handleACPAgents,        auth: false },
+  { pattern: "acp/contexts/messages", handler: handleACPGetMessages, auth: false },
+  // Pool
+  { pattern: "pool/messages",        handler: handlePoolMessages,    auth: false },
+  { pattern: "pool/members",        handler: handlePoolMembers,     auth: false },
+  { pattern: "pool/create",         handler: handlePoolCreate,      auth: true  },
+  { pattern: "pool/join",           handler: handlePoolJoin,        auth: true  },
+  { pattern: "pool/leave",          handler: handlePoolLeave,       auth: true  },
+  { pattern: "pool/speak",          handler: handlePoolSpeak,       auth: true  },
+  // Agent
+  { pattern: "agent/register",      handler: handleAgentRegister,   auth: false },
+  { pattern: "agent/produce",       handler: handleProduce,         auth: true  },
+  { pattern: "agent/consume",       handler: handleConsume,         auth: true  },
+  { pattern: "agent/pipe",          handler: handlePipe,            auth: true  },
+  // Public
+  { pattern: "",                    handler: handleIndex,           auth: false },
+  { pattern: "/",                   handler: handleIndex,           auth: false },
+  { pattern: "agents",             handler: handleAgents,          auth: false },
+  { pattern: "queues",             handler: handleQueues,          auth: false },
+  { pattern: "pools",              handler: handlePools,           auth: false },
+  { pattern: "peek",               handler: handlePeek,            auth: false },
+  { pattern: "skill",              handler: handleSkill,           auth: false },
+  { pattern: "skills",             handler: handleSkill,           auth: false },
+  { pattern: "dashboard",          handler: handleDashboard,       auth: false },
+  { pattern: "mcp",                handler: handleMcpConfig,       auth: false },
+  { pattern: ".well-known/agent-card.json", handler: handleAgentCard, auth: false },
+];
+
+function findHandler(path: string): { handler: Handler; auth: boolean; params: Record<string, string> } | null {
+  for (const entry of ROUTE_ENTRIES) {
+    const { matched, params } = matchRoute(entry.pattern, path);
+    if (matched) return { handler: entry.handler, auth: entry.auth, params };
+  }
+  return null;
+}
+
 // ─── Route handlers ────────────────────────────────────────────────────────
 
 // 校验 Agent 是否已注册
@@ -1089,6 +1166,139 @@ async function handleACPCancelRun(req: Request): Promise<Response> {
   }
 }
 
+// GET /api/a2a/tasks/{id} — Get A2A task by ID
+async function handleA2AGetTask(req: Request): Promise<Response> {
+  try {
+    const url = new URL(req.url);
+    const pathParts = url.pathname.replace(/^\/api\//, '').split('/');
+    // pathParts: ["a2a","tasks","{id}"]
+    const taskId = pathParts[2];
+    if (!taskId) return json({ ok: false, error: "Missing taskId" }, 400);
+
+    const db = await getDb();
+    // Find pointer by queue name pattern a2a:*:*:{taskId}
+    const rs = await db.execute({
+      sql: "SELECT queue_name, agent_id, status, priority, created_at FROM pointers WHERE queue_name LIKE ? ORDER BY created_at DESC LIMIT 1",
+      args: [`a2a:%:${taskId}`]
+    });
+    if (!rs.rows?.length) return json({ ok: false, error: "Task not found" }, 404);
+    const pointer = rs.rows[0] as any;
+    // Get all messages in this queue
+    const msgRs = await db.execute({
+      sql: "SELECT payload, created_at FROM pointers WHERE queue_name = ? ORDER BY created_at",
+      args: [pointer.queue_name]
+    });
+    return json({
+      taskId,
+      queueName: pointer.queue_name,
+      status: pointer.status,
+      priority: pointer.priority,
+      createdAt: pointer.created_at,
+      messages: msgRs.rows?.map((r: any) => ({ payload: r.payload, createdAt: r.created_at })) ?? []
+    });
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+// GET /api/acp/runs/{id} — Get ACP run by ID
+async function handleACPGetRun(req: Request): Promise<Response> {
+  try {
+    const url = new URL(req.url);
+    const pathParts = url.pathname.replace(/^\/api\//, '').split('/');
+    const runId = pathParts[2];
+    if (!runId) return json({ ok: false, error: "Missing runId" }, 400);
+
+    const db = await getDb();
+    // ACP runs are stored as Pool with name "acp:{runId}"
+    const rs = await db.execute({
+      sql: "SELECT name, description, guidelines, creator_id, created_at FROM pools WHERE name = ?",
+      args: [`acp:${runId}`]
+    });
+    if (!rs.rows?.length) return json({ ok: false, error: "Run not found" }, 404);
+    const pool = rs.rows[0] as any;
+    // Get members
+    const memRs = await db.execute({
+      sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool_name = ?",
+      args: [`acp:${runId}`]
+    });
+    return json({
+      runId,
+      name: pool.name,
+      description: pool.description,
+      guidelines: pool.guidelines,
+      creatorId: pool.creator_id,
+      createdAt: pool.created_at,
+      members: memRs.rows?.map((r: any) => ({ agentId: r.agent_id, joinedAt: r.joined_at })) ?? []
+    });
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+// GET /api/acp/contexts/{id} — Get ACP context (Pool) by ID
+async function handleACPGetContext(req: Request): Promise<Response> {
+  try {
+    const url = new URL(req.url);
+    const pathParts = url.pathname.replace(/^\/api\//, '').split('/');
+    const contextId = pathParts[2];
+    if (!contextId) return json({ ok: false, error: "Missing contextId" }, 400);
+
+    const db = await getDb();
+    const rs = await db.execute({
+      sql: "SELECT name, description, guidelines, creator_id, max_members, created_at FROM pools WHERE name = ?",
+      args: [contextId]
+    });
+    if (!rs.rows?.length) return json({ ok: false, error: "Context not found" }, 404);
+    const pool = rs.rows[0] as any;
+    const memRs = await db.execute({
+      sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool_name = ?",
+      args: [contextId]
+    });
+    return json({
+      contextId,
+      name: pool.name,
+      description: pool.description,
+      guidelines: pool.guidelines,
+      creatorId: pool.creator_id,
+      maxMembers: pool.max_members,
+      createdAt: pool.created_at,
+      members: memRs.rows?.map((r: any) => ({ agentId: r.agent_id, joinedAt: r.joined_at })) ?? []
+    });
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+// GET /api/acp/contexts/{id}/messages — Get messages in an ACP context
+async function handleACPGetContextMessages(req: Request): Promise<Response> {
+  try {
+    const url = new URL(req.url);
+    const pathParts = url.pathname.replace(/^\/api\//, '').split('/');
+    // pathParts: ["acp","contexts","{id}","messages"]
+    const contextId = pathParts[2];
+    if (!contextId) return json({ ok: false, error: "Missing contextId" }, 400);
+
+    const db = await getDb();
+    const msgsRs = await db.execute({
+      sql: "SELECT agent_id, message, tags, reply_to, created_at FROM pool_messages WHERE pool_name = ? ORDER BY created_at ASC LIMIT 100",
+      args: [contextId]
+    });
+    return json({
+      contextId,
+      messages: msgsRs.rows?.map((r: any) => ({
+        agentId: r.agent_id,
+        message: r.message,
+        tags: r.tags ? JSON.parse(r.tags) : [],
+        replyTo: r.reply_to,
+        createdAt: r.created_at
+      })) ?? []
+    });
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
 async function handleACPCreateContext(req: Request): Promise<Response> {
   try {
     const body = await req.json();
@@ -1275,36 +1485,23 @@ export default async function handler(req: Request): Promise<Response> {
     }
   }
   
-  // 更加鲁棒的路径提取：移除 /api 前缀，保留核心路径
-  let path = url.pathname.replace(/^\/api/, "").replace(/^\/+/, "").replace(/\/+$/, "");
+  const path = url.pathname.replace(/^\/api/, "").replace(/^\/+/, "").replace(/\/+$/, "") || "";
   
-  // 确保空路径能正确匹配
-  if (!path) path = "";
-
-  // Find handler — public routes first
-  let handler = PUBLIC_ROUTES[path];
-  let needAuth = false;
-
-  if (!handler && AUTH_ROUTES[path]) {
-    handler = AUTH_ROUTES[path];
-    needAuth = true;
-  }
-
-  if (!handler) {
-    // 尝试匹配根路径
-    handler = PUBLIC_ROUTES[""];
-    if (!handler) {
-      return json({ ok: false, error: "Not Found", path }, 404);
-    }
+  // Pattern-based route dispatch — supports {id} params
+  let matched = findHandler(path);
+  if (!matched) {
+    return json({ ok: false, error: "Not Found", path }, 404);
   }
 
   // Auth check for protected routes
-  if (needAuth && !validateAuth(req)) {
+  if (matched.auth && !validateAuth(req)) {
     return json({ ok: false, error: "Unauthorized" }, 401);
   }
 
   try {
-    return await handler(req);
+    // Attach params to request for handlers that need them
+    (req as any)._params = matched.params;
+    return await matched.handler(req);
   } catch (err) {
     console.error(`Handler error for ${path}:`, err);
     return json({
