@@ -1,17 +1,22 @@
 // src/lib/pool.ts — Pool (群聊协作空间) 核心操作
 import { v4 as uuid } from "uuid";
 import { getDb } from "./db.js";
+import { ensureAgent } from "./auth.js";
 import type { PoolInfo, PoolMessage, PoolMember } from "./types.js";
 
 // ─── Pool CRUD ─────────────────────────────────────────────────────────────
 
 export function createPool(name: string, description?: string, guidelines?: string, maxMembers?: number): PoolInfo {
+  return createPoolWithCreator(name, description, guidelines, maxMembers, "");
+}
+
+export function createPoolWithCreator(name: string, description?: string, guidelines?: string, maxMembers?: number, creatorId?: string): PoolInfo {
   const db = getDb();
-  const defaultGuidelines = "你是 Pool 中的协作者。参考他人的工作成果，但不要干预或修改他人的任务。只负责你自己的分析和执行。";
+  const defaultGuidelines = "You are a collaborative agent in this Pool. Share progress transparently. Reference others' work. Do not command other agents.";
   db.prepare(`
-    INSERT INTO pools (name, description, guidelines, max_members)
-    VALUES (?, ?, ?, ?)
-  `).run(name, description || "", guidelines || defaultGuidelines, maxMembers || 20);
+    INSERT INTO pools (name, description, guidelines, max_members, creator_id)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(name, description || "", guidelines || defaultGuidelines, maxMembers || 20, creatorId || "");
   return getPool(name)!;
 }
 
@@ -26,6 +31,7 @@ export function getPool(name: string): PoolInfo | null {
     guidelines: row.guidelines,
     maxMembers: row.max_members,
     memberCount,
+    creatorId: row.creator_id,
     createdAt: row.created_at,
   };
 }
@@ -41,6 +47,7 @@ export function listPools(): PoolInfo[] {
       guidelines: r.guidelines,
       maxMembers: r.max_members,
       memberCount,
+      creatorId: r.creator_id,
       createdAt: r.created_at,
     };
   });
@@ -49,6 +56,8 @@ export function listPools(): PoolInfo[] {
 // ─── Members ───────────────────────────────────────────────────────────────
 
 export function joinPool(pool: string, agentId: string): { ok: boolean; error?: string } {
+  // Agent must be registered
+  if (!ensureAgent(agentId)) return { ok: false, error: "Agent not registered. Call register first." };
   const db = getDb();
   const poolInfo = getPool(pool);
   if (!poolInfo) return { ok: false, error: `Pool '${pool}' not found` };
@@ -62,6 +71,8 @@ export function joinPool(pool: string, agentId: string): { ok: boolean; error?: 
 }
 
 export function leavePool(pool: string, agentId: string) {
+  // Agent must be registered
+  if (!ensureAgent(agentId)) return { ok: false, error: "Agent not registered." };
   const db = getDb();
   db.prepare("DELETE FROM pool_members WHERE pool = ? AND agent_id = ?").run(pool, agentId);
   return { ok: true };
@@ -80,7 +91,9 @@ export function speak(
   agentId: string,
   content: string,
   options?: { replyTo?: string; tags?: string[]; metadata?: Record<string, string> }
-): PoolMessage {
+): PoolMessage | { error: string } {
+  // Agent must be registered
+  if (!ensureAgent(agentId)) return { error: "Agent not registered. Call register first." };
   const db = getDb();
   const id = uuid();
   const tags = options?.tags || [];

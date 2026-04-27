@@ -30,6 +30,7 @@ export function getDb(): Database.Database {
     CREATE TABLE IF NOT EXISTS queues (
       name        TEXT PRIMARY KEY,
       description TEXT DEFAULT '',
+      creator_id  TEXT DEFAULT '',
       created_at  TEXT DEFAULT (datetime('now'))
     );
 
@@ -47,6 +48,7 @@ export function getDb(): Database.Database {
       description TEXT DEFAULT '',
       guidelines  TEXT DEFAULT '你是 Pool 中的协作者。参考他人的工作成果，但不要干预或修改他人的任务。只负责你自己的分析和执行。',
       max_members INTEGER DEFAULT 20,
+      creator_id  TEXT DEFAULT '',
       created_at  TEXT DEFAULT (datetime('now'))
     );
 
@@ -71,10 +73,20 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_pool_messages_reply ON pool_messages(reply_to);
   `);
 
-  // Migration: add lineage column if missing
-  const cols = _db.prepare("PRAGMA table_info(pointers)").all() as any[];
-  if (!cols.some((c) => c.name === "lineage")) {
+  // Migrations: add columns if missing
+  const pointerCols = _db.prepare("PRAGMA table_info(pointers)").all() as any[];
+  if (!pointerCols.some((c) => c.name === "lineage")) {
     _db.exec("ALTER TABLE pointers ADD COLUMN lineage TEXT DEFAULT '[]'");
+  }
+
+  const queueCols = _db.prepare("PRAGMA table_info(queues)").all() as any[];
+  if (!queueCols.some((c) => c.name === "creator_id")) {
+    _db.exec("ALTER TABLE queues ADD COLUMN creator_id TEXT DEFAULT ''");
+  }
+
+  const poolCols = _db.prepare("PRAGMA table_info(pools)").all() as any[];
+  if (!poolCols.some((c) => c.name === "creator_id")) {
+    _db.exec("ALTER TABLE pools ADD COLUMN creator_id TEXT DEFAULT ''");
   }
 
   return _db;

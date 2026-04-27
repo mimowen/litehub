@@ -8,6 +8,7 @@ import {
   registerAgent, getAgent, listAgents,
   ensureQueue, getQueueStatus, listQueues,
   produce, consume, peek, pipe,
+  ensureAgent, queueExists,
 } from "./lib/queue.js";
 import {
   createPool, getPool, listPools,
@@ -428,12 +429,15 @@ app.get("/api", (c) => {
 
 app.post("/api/agent/register", async (c) => {
   const body = await c.req.json();
-  const { agentId, name, role, queues, pollInterval } = body;
-  if (!agentId || !name || !role || !queues?.length) {
-    return c.json({ ok: false, error: "缺少必填字段: agentId, name, role, queues" }, 400);
+  const { agentId, name, role, queues, pools, pollInterval } = body;
+  if (!agentId || !name || !role) {
+    return c.json({ ok: false, error: "缺少必填字段: agentId, name, role" }, 400);
   }
-  const agent = registerAgent({ agentId, name, role, queues, pollInterval });
-  return c.json({ ok: true, agent });
+  // queues can be string[] or {name,description}[]
+  const queueInput = queues || [];
+  const poolInput = pools || [];
+  const result = registerAgent({ agentId, name, role, queues: queueInput, pollInterval }, queueInput, poolInput);
+  return c.json({ ok: true, agent: result.agent, createdQueues: result.createdQueues, createdPools: result.createdPools });
 });
 
 app.get("/api/agents", (c) => {
@@ -448,6 +452,14 @@ app.post("/api/agent/produce", async (c) => {
   if (!agentId || !queue || data === undefined) {
     return c.json({ ok: false, error: "缺少必填字段: agentId, queue, data" }, 400);
   }
+  // Agent must be registered
+  if (!ensureAgent(agentId)) {
+    return c.json({ ok: false, error: "Agent not registered. Call register first." }, 403);
+  }
+  // Queue must exist
+  if (!queueExists(queue)) {
+    return c.json({ ok: false, error: "Queue not found. Create it during registration first." }, 404);
+  }
   const pointer = produce(queue, String(data), agentId, { contentType, metadata });
   return c.json({ ok: true, pointer });
 });
@@ -458,6 +470,14 @@ app.post("/api/agent/consume", async (c) => {
   if (!agentId || !queue) {
     return c.json({ ok: false, error: "缺少必填字段: agentId, queue" }, 400);
   }
+  // Agent must be registered
+  if (!ensureAgent(agentId)) {
+    return c.json({ ok: false, error: "Agent not registered. Call register first." }, 403);
+  }
+  // Queue must exist
+  if (!queueExists(queue)) {
+    return c.json({ ok: false, error: "Queue not found." }, 404);
+  }
   const items = consume(queue, agentId, maxItems || 1, { loopDetection });
   return c.json({ ok: true, items });
 });
@@ -467,6 +487,10 @@ app.post("/api/agent/pipe", async (c) => {
   const { agentId, sourceQueue, targetQueue, data, contentType, metadata } = body;
   if (!agentId || !sourceQueue || !targetQueue || data === undefined) {
     return c.json({ ok: false, error: "缺少必填字段: agentId, sourceQueue, targetQueue, data" }, 400);
+  }
+  // Agent must be registered
+  if (!ensureAgent(agentId)) {
+    return c.json({ ok: false, error: "Agent not registered. Call register first." }, 403);
   }
   const result = pipe(sourceQueue, targetQueue, agentId, String(data), { contentType, metadata });
   if (!result) return c.json({ ok: false, error: "源队列无数据" }, 404);
@@ -482,6 +506,9 @@ app.get("/api/queues", (c) => {
 app.get("/api/peek", (c) => {
   const queue = c.req.query("queue");
   if (!queue) return c.json({ ok: false, error: "缺少 query: queue" }, 400);
+  if (!queueExists(queue)) {
+    return c.json({ ok: false, error: "Queue not found." }, 404);
+  }
   const pointer = peek(queue);
   if (!pointer) return c.json({ ok: false, error: "队列为空或不存在" }, 404);
   return c.json({ ok: true, pointer });
@@ -551,6 +578,7 @@ app.post("/api/pool/speak", async (c) => {
   const { pool, agentId, content, replyTo, tags, metadata } = body;
   if (!pool || !agentId || !content) return c.json({ ok: false, error: "缺少必填字段: pool, agentId, content" }, 400);
   const msg = speak(pool, agentId, content, { replyTo, tags, metadata });
+  if ("error" in msg) return c.json({ ok: false, error: msg.error }, 403);
   return c.json({ ok: true, message: msg });
 });
 

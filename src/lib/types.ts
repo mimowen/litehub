@@ -48,6 +48,7 @@ export interface PoolInfo {
   guidelines: string;
   maxMembers: number;
   memberCount: number;
+  creatorId?: string;
   createdAt: string;
 }
 

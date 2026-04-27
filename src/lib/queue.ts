@@ -1,22 +1,82 @@
 // src/lib/queue.ts — 队列核心操作
 import { v4 as uuid } from "uuid";
 import { getDb } from "./db.js";
+import { ensureAgent, queueExists } from "./auth.js";
+import { createPoolWithCreator } from "./pool.js";
 import type { AgentInfo, PointerRecord } from "./types.js";
 
 // ─── Agent ────────────────────────────────────────────────────────────────
 
-export function registerAgent(info: Omit<AgentInfo, "registeredAt">): AgentInfo {
+export { ensureAgent, queueExists } from "./auth.js";
+
+export interface QueueDescriptor {
+  name: string;
+  description?: string;
+}
+
+export interface PoolDescriptor {
+  name: string;
+  description?: string;
+  maxMembers?: number;
+}
+
+export function registerAgent(
+  info: Omit<AgentInfo, "registeredAt">,
+  queues?: QueueDescriptor[],
+  pools?: PoolDescriptor[],
+): { agent: AgentInfo; createdQueues: string[]; createdPools: string[] } {
   const db = getDb();
   const now = new Date().toISOString();
+
+  // Normalize queue names: support both string[] and {name,description}[]
+  const queueNames: string[] = [];
+  const queueDescs: QueueDescriptor[] = [];
+  for (const q of info.queues) {
+    if (typeof q === "string") {
+      queueNames.push(q);
+      queueDescs.push({ name: q });
+    } else {
+      queueNames.push(q.name);
+      queueDescs.push(q);
+    }
+  }
+
+  // Also add queues from the dedicated parameter
+  if (queues) {
+    for (const q of queues) {
+      if (!queueNames.includes(q.name)) {
+        queueNames.push(q.name);
+        queueDescs.push(q);
+      }
+    }
+  }
+
   db.prepare(`
     INSERT OR REPLACE INTO agents (agent_id, name, role, queues, poll_interval, registered_at)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(info.agentId, info.name, info.role, JSON.stringify(info.queues), info.pollInterval || 0, now);
+  `).run(info.agentId, info.name, info.role, JSON.stringify(queueNames), info.pollInterval || 0, now);
 
-  // 自动创建队列
-  for (const q of info.queues) ensureQueue(q);
+  // Create queues with description + creator_id
+  const createdQueues: string[] = [];
+  for (const qd of queueDescs) {
+    ensureQueue(qd.name, qd.description, info.agentId);
+    createdQueues.push(qd.name);
+  }
 
-  return { ...info, registeredAt: now };
+  // Create pools if provided
+  const createdPools: string[] = [];
+  if (pools) {
+    for (const pd of pools) {
+      try {
+        createPoolWithCreator(pd.name, pd.description, undefined, pd.maxMembers, info.agentId);
+        createdPools.push(pd.name);
+      } catch {
+        // Pool already exists, skip
+      }
+    }
+  }
+
+  return { agent: { ...info, queues: queueNames, registeredAt: now }, createdQueues, createdPools };
 }
 
 export function getAgent(agentId: string): AgentInfo | null {
@@ -42,11 +102,11 @@ function rowToAgent(row: any): AgentInfo {
 
 // ─── Queue ────────────────────────────────────────────────────────────────
 
-export function ensureQueue(name: string, description?: string) {
+export function ensureQueue(name: string, description?: string, creatorId?: string) {
   const db = getDb();
   const existing = db.prepare("SELECT 1 FROM queues WHERE name = ?").get(name);
   if (!existing) {
-    db.prepare("INSERT INTO queues (name, description) VALUES (?, ?)").run(name, description || "");
+    db.prepare("INSERT INTO queues (name, description, creator_id) VALUES (?, ?, ?)").run(name, description || "", creatorId || "");
   }
   return getQueueStatus(name);
 }
@@ -62,7 +122,11 @@ export function getQueueStatus(name: string) {
 
 export function listQueues() {
   const rows = getDb().prepare("SELECT * FROM queues ORDER BY created_at").all() as any[];
-  return rows.map(r => getQueueStatus(r.name)!).filter(Boolean);
+  return rows.map(r => {
+    const status = getQueueStatus(r.name);
+    if (!status) return null;
+    return { ...status, creatorId: r.creator_id };
+  }).filter(Boolean);
 }
 
 // ─── Produce ──────────────────────────────────────────────────────────────
@@ -73,7 +137,8 @@ export function produce(
   producerId: string,
   options?: { contentType?: string; metadata?: Record<string, string>; lineage?: string[] }
 ) {
-  ensureQueue(queueName);
+  // Queue must exist
+  if (!queueExists(queueName)) return null;
   const id = uuid();
   const buf = typeof data === "string" ? Buffer.from(data, "utf-8") : data;
 
