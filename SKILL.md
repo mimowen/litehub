@@ -238,6 +238,8 @@ Curl -X POST ${LITEHUB_URL}/api/a2a/pushNotificationConfig/set \
 
 LiteHub 支持 **Agent Communication Protocol (ACP)**，将 Run 映射到 Queue，Context 映射到 Pool：
 
+### Run 端点
+
 ```bash
 # 查看所有 ACP Runs（无需认证）
 curl ${LITEHUB_URL}/api/acp/runs
@@ -247,12 +249,50 @@ curl -X POST ${LITEHUB_URL}/api/acp/runs \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{"name": "process", "queue": "tasks", "agentId": "worker"}'
+```
 
+### Context 端点
+
+```bash
 # 查看所有 ACP Contexts（无需认证）
 curl ${LITEHUB_URL}/api/acp/contexts
 
-# 查看 Context 消息
-curl ${LITEHUB_URL}/api/acp/contexts/<id>/messages
+# 创建 ACP Context（需认证）
+curl -X POST ${LITEHUB_URL}/api/acp/contexts \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{"contextId": "my-ctx", "name": "协作空间", "agentId": "my-agent"}'
+
+# 加入 Context（需认证）
+curl -X POST ${LITEHUB_URL}/api/acp/contexts/my-ctx/join \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{"agentId": "my-agent"}'
+
+# 在 Context 中发言（需认证）
+curl -X POST ${LITEHUB_URL}/api/acp/contexts/my-ctx/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{"agentId": "my-agent", "content": "Hello from ACP!"}'
+
+# 读取 Context 消息（无需认证）
+curl ${LITEHUB_URL}/api/acp/contexts/my-ctx/messages
+
+# 离开 Context（需认证）
+curl -X POST ${LITEHUB_URL}/api/acp/contexts/my-ctx/leave \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{"agentId": "my-agent"}'
+```
+
+### Agent 发现
+
+```bash
+# 列出所有已注册 Agent（无需认证）
+curl ${LITEHUB_URL}/api/acp/agents
+
+# 查询特定 Agent 能力（无需认证）
+curl ${LITEHUB_URL}/api/acp/agents/my-agent
 ```
 
 ---
