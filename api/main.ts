@@ -747,6 +747,157 @@ const MCP_TOOLS = [
       },
       required: ["agentId"]
     }
+  },
+  // ── A2A Protocol Tools (Google Agent-to-Agent) ──
+  {
+    name: "a2a_create_task",
+    description: "创建一个 A2A Task，映射到 LiteHub Queue 系统（Agent 间任务委派）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "发起者 Agent ID" },
+        targetAgentId: { type: "string", description: "目标 Agent ID（可选，默认发给所有消费者）" },
+        taskId: { type: "string", description: "Task ID（可选，默认自动生成 UUID）" },
+        name: { type: "string", description: "Task 名称" },
+        input: { description: "Task 输入数据（任意格式）" },
+        messageId: { type: "string", description: "关联的消息 ID（可选）" },
+        metadata: { type: "object", description: "元数据（可选，包含 priority 等）" }
+      },
+      required: ["agentId"]
+    }
+  },
+  {
+    name: "a2a_get_task",
+    description: "查询 A2A Task 详情（状态 + 所有消息）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "Task ID" }
+      },
+      required: ["taskId"]
+    }
+  },
+  {
+    name: "a2a_cancel_task",
+    description: "取消一个 A2A Task（将 pointer 状态设为 cancelled）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "Task ID" },
+        agentId: { type: "string", description: "操作者 Agent ID" }
+      },
+      required: ["taskId", "agentId"]
+    }
+  },
+  {
+    name: "a2a_list_tasks",
+    description: "列出所有 A2A Task（队列名以 a2a: 开头的 pointer）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "过滤：只返回指定 Agent 创建的 tasks" },
+        status: { type: "string", description: "过滤：pending / consumed / looped / cancelled" },
+        limit: { type: "number", description: "返回数量限制，默认 20" }
+      }
+    }
+  },
+  {
+    name: "a2a_set_push_notification",
+    description: "配置 Task 的 Webhook 推送通知（订阅 push）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "Agent ID" },
+        webhookUrl: { type: "string", description: "推送目标 URL" },
+        event: { type: "string", description: "事件类型：task_created / task_updated / task_completed" }
+      },
+      required: ["agentId", "webhookUrl"]
+    }
+  },
+  {
+    name: "a2a_get_push_notification",
+    description: "查询已配置的 Webhook 推送订阅",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "Agent ID" }
+      },
+      required: ["agentId"]
+    }
+  },
+  // ── ACP Protocol Tools (Agent Communication Protocol) ──
+  {
+    name: "acp_create_run",
+    description: "创建一个 ACP Run（映射到 Pool，协作会话）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "创建者 Agent ID" },
+        runId: { type: "string", description: "Run ID（可选，默认自动生成）" },
+        name: { type: "string", description: "Run 名称" },
+        guidelines: { type: "string", description: "协作指导原则（可选）" }
+      },
+      required: ["agentId"]
+    }
+  },
+  {
+    name: "acp_get_run",
+    description: "查询 ACP Run 详情（Pool 信息 + 成员列表）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Run ID" }
+      },
+      required: ["runId"]
+    }
+  },
+  {
+    name: "acp_cancel_run",
+    description: "取消一个 ACP Run（标记 Pool 描述加 [cancelled]）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Run ID" },
+        agentId: { type: "string", description: "操作者 Agent ID" }
+      },
+      required: ["runId", "agentId"]
+    }
+  },
+  {
+    name: "acp_list_runs",
+    description: "列出所有 ACP Run（Pool 名称以 acp: 开头的）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "过滤：只返回指定 Agent 创建的 runs" },
+        limit: { type: "number", description: "返回数量限制，默认 20" }
+      }
+    }
+  },
+  {
+    name: "acp_create_context",
+    description: "创建一个 ACP Context（Pool，协作上下文）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "创建者 Agent ID" },
+        contextId: { type: "string", description: "Context ID（可选）" },
+        name: { type: "string", description: "Context 名称" },
+        guidelines: { type: "string", description: "协作指导原则" }
+      },
+      required: ["agentId"]
+    }
+  },
+  {
+    name: "acp_get_context",
+    description: "查询 ACP Context 详情（Pool 信息 + 成员）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        contextId: { type: "string", description: "Context ID（Pool 名称）" }
+      },
+      required: ["contextId"]
+    }
   }
 ];
 
@@ -1006,6 +1157,132 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
       const pRs = await db.execute({ sql: "SELECT name, description, max_members, created_at FROM pools WHERE creator_id = ? ORDER BY created_at", args: [agentId] });
       const myPools = pRs.rows.map((r: any) => ({ name: r.name, description: r.description, maxMembers: r.max_members, createdAt: r.created_at }));
       return { ok: true, agentId, queues: myQueues, pools: myPools };
+    }
+
+    // ── A2A Protocol Tools ──
+    case "a2a_create_task": {
+      const db = await getDb();
+      const { agentId, targetAgentId, taskId, name, input, messageId, metadata } = args;
+      if (!agentId) return { ok: false, error: "Missing agentId" };
+      const agentErr = await ensureAgent(db, agentId);
+      if (agentErr) return await getJson(agentErr);
+      const queueName = `a2a:${targetAgentId || agentId}:${taskId || crypto.randomUUID()}`;
+      await db.execute({ sql: "INSERT OR IGNORE INTO pointers (queue_name, agent_id, status, priority) VALUES (?, ?, 'pending', ?)", args: [queueName, agentId, metadata?.priority ?? 5] });
+      // Produce into the queue
+      const produceReq = new Request(`${new URL(req.url).origin}/api/agent/produce`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': req.headers.get('Authorization') || '' },
+        body: JSON.stringify({ agentId, queue: queueName, data: JSON.stringify({ taskId: taskId || queueName.split(':')[2], name, input, messageId, metadata }) })
+      });
+      return await getJson(await handleProduce(produceReq));
+    }
+    case "a2a_get_task": {
+      const { taskId } = args;
+      if (!taskId) return { ok: false, error: "Missing taskId" };
+      const db = await getDb();
+      const rs = await db.execute({ sql: "SELECT queue_name, agent_id, status, priority, created_at FROM pointers WHERE queue_name LIKE ? ORDER BY created_at DESC LIMIT 1", args: [`a2a:%:${taskId}`] });
+      if (!rs.rows?.length) return { ok: false, error: "Task not found" };
+      const pointer = rs.rows[0] as any;
+      const msgRs = await db.execute({ sql: "SELECT payload, created_at FROM pointers WHERE queue_name = ? ORDER BY created_at", args: [pointer.queue_name] });
+      return { taskId, queueName: pointer.queue_name, status: pointer.status, priority: pointer.priority, createdAt: pointer.created_at, messages: msgRs.rows?.map((r: any) => ({ payload: r.payload, createdAt: r.created_at })) ?? [] };
+    }
+    case "a2a_cancel_task": {
+      const { taskId, agentId } = args;
+      if (!taskId || !agentId) return { ok: false, error: "Missing taskId or agentId" };
+      const db = await getDb();
+      const agentErr = await ensureAgent(db, agentId);
+      if (agentErr) return await getJson(agentErr);
+      const rs = await db.execute({ sql: "UPDATE pointers SET status = 'cancelled' WHERE queue_name LIKE ? AND agent_id = ? AND status = 'pending'", args: [`a2a:%:${taskId}`, agentId] });
+      return { ok: true, cancelled: rs.rowsAffected ?? 0 };
+    }
+    case "a2a_list_tasks": {
+      const { agentId, status, limit } = args;
+      const db = await getDb();
+      let sql = "SELECT DISTINCT queue_name, agent_id, status, priority, created_at FROM pointers WHERE queue_name LIKE 'a2a:%'";
+      const a: any[] = [];
+      if (agentId) { sql += " AND agent_id = ?"; a.push(agentId); }
+      if (status) { sql += " AND status = ?"; a.push(status); }
+      sql += " ORDER BY created_at DESC LIMIT ?"; a.push(limit ?? 20);
+      const rs = await db.execute({ sql, args: a });
+      return { tasks: rs.rows?.map((r: any) => ({ queueName: r.queue_name, agentId: r.agent_id, status: r.status, priority: r.priority, createdAt: r.created_at, taskId: r.queue_name.split(':')[2] })) ?? [] };
+    }
+    case "a2a_set_push_notification": {
+      const { agentId, webhookUrl, event } = args;
+      if (!agentId || !webhookUrl) return { ok: false, error: "Missing agentId or webhookUrl" };
+      const db = await getDb();
+      const agentErr = await ensureAgent(db, agentId);
+      if (agentErr) return await getJson(agentErr);
+      await db.execute({ sql: "INSERT OR REPLACE INTO push_subscriptions (agent_id, scope, scope_name, webhook_url, event, created_at) VALUES (?, 'a2a', ?, ?, ?, datetime('now'))", args: [agentId, agentId, webhookUrl, event || 'task_updated'] });
+      return { ok: true, message: "Push notification configured" };
+    }
+    case "a2a_get_push_notification": {
+      const { agentId } = args;
+      if (!agentId) return { ok: false, error: "Missing agentId" };
+      const db = await getDb();
+      const rs = await db.execute({ sql: "SELECT scope_name, webhook_url, event, created_at FROM push_subscriptions WHERE agent_id = ? AND scope = 'a2a'", args: [agentId] });
+      return { subscriptions: rs.rows?.map((r: any) => ({ scopeName: r.scope_name, webhookUrl: r.webhook_url, event: r.event, createdAt: r.created_at })) ?? [] };
+    }
+
+    // ── ACP Protocol Tools ──
+    case "acp_create_run": {
+      const { agentId, runId, name, guidelines } = args;
+      if (!agentId) return { ok: false, error: "Missing agentId" };
+      const db = await getDb();
+      const agentErr = await ensureAgent(db, agentId);
+      if (agentErr) return await getJson(agentErr);
+      const id = runId || crypto.randomUUID();
+      await db.execute({ sql: "INSERT OR IGNORE INTO pools (name, description, guidelines, creator_id, max_members) VALUES (?, ?, ?, ?, 20)", args: [`acp:${id}`, name || id, guidelines || '', agentId] });
+      notifySubscribers("acp", `acp:${id}`, "run_created", { runId: id, creatorId: agentId }).catch(() => {});
+      return { ok: true, runId: id };
+    }
+    case "acp_get_run": {
+      const { runId } = args;
+      if (!runId) return { ok: false, error: "Missing runId" };
+      const db = await getDb();
+      const rs = await db.execute({ sql: "SELECT name, description, guidelines, creator_id, created_at FROM pools WHERE name = ?", args: [`acp:${runId}`] });
+      if (!rs.rows?.length) return { ok: false, error: "Run not found" };
+      const pool = rs.rows[0] as any;
+      const memRs = await db.execute({ sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool_name = ?", args: [`acp:${runId}`] });
+      return { runId, name: pool.name, description: pool.description, guidelines: pool.guidelines, creatorId: pool.creator_id, createdAt: pool.created_at, members: memRs.rows?.map((r: any) => ({ agentId: r.agent_id, joinedAt: r.joined_at })) ?? [] };
+    }
+    case "acp_cancel_run": {
+      const { runId, agentId } = args;
+      if (!runId || !agentId) return { ok: false, error: "Missing runId or agentId" };
+      const db = await getDb();
+      const agentErr = await ensureAgent(db, agentId);
+      if (agentErr) return await getJson(agentErr);
+      const rs = await db.execute({ sql: "UPDATE pools SET description = description || ' [cancelled]' WHERE name = ? AND creator_id = ?", args: [`acp:${runId}`, agentId] });
+      return { ok: true, cancelled: rs.rowsAffected ?? 0 };
+    }
+    case "acp_list_runs": {
+      const { agentId, limit } = args;
+      const db = await getDb();
+      let sql = "SELECT name, description, creator_id, created_at FROM pools WHERE name LIKE 'acp:%'";
+      const a: any[] = [];
+      if (agentId) { sql += " AND creator_id = ?"; a.push(agentId); }
+      sql += " ORDER BY created_at DESC LIMIT ?"; a.push(limit ?? 20);
+      const rs = await db.execute({ sql, args: a });
+      return { runs: rs.rows?.map((r: any) => ({ runId: r.name.replace('acp:', ''), description: r.description, creatorId: r.creator_id, createdAt: r.created_at })) ?? [] };
+    }
+    case "acp_create_context": {
+      const { agentId, contextId, name, guidelines } = args;
+      if (!agentId) return { ok: false, error: "Missing agentId" };
+      const db = await getDb();
+      const agentErr = await ensureAgent(db, agentId);
+      if (agentErr) return await getJson(agentErr);
+      const id = contextId || crypto.randomUUID();
+      await db.execute({ sql: "INSERT OR IGNORE INTO pools (name, description, guidelines, creator_id, max_members) VALUES (?, ?, ?, ?, 20)", args: [id, name || id, guidelines || '', agentId] });
+      return { ok: true, contextId: id };
+    }
+    case "acp_get_context": {
+      const { contextId } = args;
+      if (!contextId) return { ok: false, error: "Missing contextId" };
+      const db = await getDb();
+      const rs = await db.execute({ sql: "SELECT name, description, guidelines, creator_id, max_members, created_at FROM pools WHERE name = ?", args: [contextId] });
+      if (!rs.rows?.length) return { ok: false, error: "Context not found" };
+      const pool = rs.rows[0] as any;
+      const memRs = await db.execute({ sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool_name = ?", args: [contextId] });
+      return { contextId, name: pool.name, description: pool.description, guidelines: pool.guidelines, creatorId: pool.creator_id, maxMembers: pool.max_members, createdAt: pool.created_at, members: memRs.rows?.map((r: any) => ({ agentId: r.agent_id, joinedAt: r.joined_at })) ?? [] };
     }
 
     default:
