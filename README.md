@@ -30,6 +30,9 @@ LiteHub 是一个**队列管道系统**，让分布式 AI Agent 通过 HTTP API 
 | **认证** | 可选 Bearer Token 认证，保护 API 安全 |
 | **零 SDK** | 纯 HTTP，`curl` / `fetch` 即可接入 |
 | **MCP 协议** | ✅ 完整的 Model Context Protocol 支持，兼容 Cursor、Claude Desktop 等客户端 |
+| **A2A 协议** | ✅ Agent-to-Agent 协议适配，Task 映射到 Queue |
+| **ACP 协议** | ✅ Agent Communication Protocol 适配，Run 映射到 Queue，Context 映射到 Pool |
+| **Push 通知** | ✅ Webhook 推送，produce/consume/speak 时自动通知订阅者 |
 | **多平台** | Vercel + Turso / Cloudflare Workers + D1 / 本地 SQLite |
 | **AI Ready** | `/skill` 端点可直接让 AI 下载接入指引 |
 
@@ -200,7 +203,9 @@ LiteHub 支持两种 MCP 端点路径（功能完全相同）：
 
 ### 可用的 MCP 工具
 
-连接后，AI 助手可以调用以下 12 个工具：
+连接后，AI 助手可以调用以下工具：
+
+#### 核心工具（12 个）
 
 | 工具名称 | 功能描述 |
 |---------|---------|
@@ -216,6 +221,28 @@ LiteHub 支持两种 MCP 端点路径（功能完全相同）：
 | `litehub_agents` | 列出所有 Agent |
 | `litehub_queues` | 列出所有队列及统计 |
 | `litehub_pools` | 列出所有协作池 |
+
+#### A2A 协议工具（6 个）
+
+| 工具名称 | 功能描述 |
+|---------|---------|
+| `a2a_create_task` | 创建 A2A Task（映射到 Queue produce） |
+| `a2a_get_task` | 查询 A2A Task 详情 |
+| `a2a_cancel_task` | 取消 A2A Task |
+| `a2a_list_tasks` | 列出所有 A2A Tasks |
+| `a2a_set_push_notification` | 设置 Task 推送通知 Webhook |
+| `a2a_get_push_notification` | 获取推送通知配置 |
+
+#### ACP 协议工具（5 个）
+
+| 工具名称 | 功能描述 |
+|---------|---------|
+| `acp_create_run` | 创建 ACP Run（映射到 Queue produce） |
+| `acp_get_run` | 查询 ACP Run 详情 |
+| `acp_cancel_run` | 取消 ACP Run |
+| `acp_list_runs` | 列出所有 ACP Runs |
+| `acp_create_context` | 创建 ACP Context（映射到 Pool） |
+| `acp_get_context` | 获取 ACP Context 详情 |
 
 ### 技术细节
 
@@ -410,6 +437,32 @@ curl "${LITEHUB_URL}/api/pool/members?pool=general"
 | `GET` | `/api/mcp/sse` | MCP Streamable HTTP/SSE 端点 |
 | `GET` | `/dashboard` | 交互式 Dashboard（兼容路径） |
 
+### A2A 协议端点
+
+| 方法 | 端点 | 认证 | 说明 |
+|------|------|------|------|
+| `GET` | `/.well-known/agent-card.json` | 无 | Agent Card 发现 |
+| `GET` | `/api/a2a/tasks` | 无 | 列出所有 Tasks（公开） |
+| `POST` | `/api/a2a/tasks` | Bearer | 创建 Task |
+| `GET` | `/api/a2a/tasks/{id}` | 无 | 查询 Task 详情 |
+| `POST` | `/api/a2a/tasks/{id}/cancel` | Bearer | 取消 Task |
+| `POST` | `/api/a2a/pushNotificationConfig/set` | Bearer | 设置推送通知 Webhook |
+
+### ACP 协议端点
+
+| 方法 | 端点 | 认证 | 说明 |
+|------|------|------|------|
+| `GET` | `/api/acp/runs` | 无 | 列出所有 Runs（公开） |
+| `POST` | `/api/acp/runs` | Bearer | 创建 Run |
+| `GET` | `/api/acp/runs/{id}` | 无 | 查询 Run 详情 |
+| `POST` | `/api/acp/runs/{id}/cancel` | Bearer | 取消 Run |
+| `GET` | `/api/acp/contexts` | 无 | 列出所有 Contexts（公开） |
+| `POST` | `/api/acp/contexts` | Bearer | 创建 Context |
+| `GET` | `/api/acp/contexts/{id}` | 无 | 获取 Context 详情 |
+| `GET` | `/api/acp/contexts/{id}/messages` | 无 | 读取 Context 消息 |
+
+> **认证说明**：GET 列表端点无需认证（方便 Agent polling），POST 创建/修改操作需要 `Authorization: Bearer <token>` 头。
+
 ## 多生产者 / 多消费者
 
 LiteHub **天然支持多生产者 + 多消费者共享同一队列**：
@@ -438,13 +491,13 @@ GET ${LITEHUB_URL}/skill
 
 ## 扩展方向
 
-- [ ] **被动通知** — Consumer 回调 URL（webhook），有数据时主动推送
+- [x] **被动通知** — Consumer 回调 URL（webhook），有数据时主动推送（已实现，produce/consume/speak 触发）
 - [x] **SSE** — Server-Sent Events 实时推送（已实现，演示用途）
 - [x] **MCP 协议** — Model Context Protocol 完整支持（已实现）
 - [ ] **死信队列** — 消费失败的消息进入 DLQ
 - [ ] **消息重试 / TTL** — 设定消息过期时间
 - [ ] **优先级队列** — 按优先级而非 FIFO 顺序
-- [ ] **认证层** — JWT / API Key
+- [x] **认证层** — Bearer Token 认证（已实现，可选）
 
 ## 许可证
 
