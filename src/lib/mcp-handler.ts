@@ -99,6 +99,9 @@ export function createMcpServer() {
     async ({ agentId, queue, data, contentType, metadata }) => {
       try {
         const pointer = produce(queue, String(data), agentId, { contentType, metadata });
+        if (!pointer) {
+          return { content: [{ type: "text", text: `❌ Queue '${queue}' does not exist. Register first or use a queue created by another agent.` }], isError: true };
+        }
         return {
           content: [
             {
@@ -227,14 +230,15 @@ export function createMcpServer() {
       try {
         const result = pipe(sourceQueue, targetQueue, agentId, String(data), { contentType, metadata });
         
-        if (!result) {
+        if (!result || !result.output) {
           return {
             content: [
               {
                 type: "text",
-                text: `ℹ️ Source queue '${sourceQueue}' is empty. Nothing to pipe.`,
+                text: `❌ Source queue '${sourceQueue}' is empty or target queue does not exist.`,
               },
             ],
+            isError: true,
           };
         }
 
@@ -359,6 +363,12 @@ export function createMcpServer() {
     async ({ pool, agentId, content, replyTo, tags, metadata }) => {
       try {
         const msg = speak(pool, agentId, content, { replyTo, tags, metadata });
+        if (!msg || 'error' in msg) {
+          return {
+            content: [{ type: "text", text: `❌ ${msg?.error || 'Failed to send message to pool'}` }],
+            isError: true,
+          };
+        }
         return {
           content: [
             {

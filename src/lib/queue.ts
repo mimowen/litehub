@@ -28,17 +28,12 @@ export function registerAgent(
   const db = getDb();
   const now = new Date().toISOString();
 
-  // Normalize queue names: support both string[] and {name,description}[]
+  // Normalize queue names: all items in info.queues are strings (registered via agent/register)
   const queueNames: string[] = [];
-  const queueDescs: QueueDescriptor[] = [];
+  const queueDescs: { name: string; description?: string }[] = [];
   for (const q of info.queues) {
-    if (typeof q === "string") {
-      queueNames.push(q);
-      queueDescs.push({ name: q });
-    } else {
-      queueNames.push(q.name);
-      queueDescs.push(q);
-    }
+    queueNames.push(q);
+    queueDescs.push({ name: q });
   }
 
   // Also add queues from the dedicated parameter
