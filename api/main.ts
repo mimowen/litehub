@@ -167,6 +167,8 @@ async function handleProduce(req: Request): Promise<Response> {
     sql: `INSERT INTO pointers (id, queue, producer_id, data, size, content_type, metadata, lineage) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [id, queue, agentId, data, size, contentType || "text/plain", JSON.stringify(metadata || {}), JSON.stringify(lineage || [])],
   });
+  // Fire push notifications (non-blocking)
+  notifySubscribers("queue", queue, "message_produced", { pointerId: id, producerId: agentId }).catch(() => {});
   return json({ ok: true, id, queue });
 }
 
@@ -192,6 +194,8 @@ async function handleConsume(req: Request): Promise<Response> {
       continue;
     }
     await db.execute({ sql: "UPDATE pointers SET status = 'consumed' WHERE id = ?", args: [row.id] });
+    // Fire push notifications (non-blocking)
+    notifySubscribers("queue", queue, "message_consumed", { pointerId: row.id, consumerId: agentId }).catch(() => {});
     return json({
       ok: true,
       pointer: {
@@ -238,6 +242,7 @@ async function handlePoolCreate(req: Request): Promise<Response> {
     sql: "INSERT OR REPLACE INTO pools (name, description, guidelines, max_members, creator_id) VALUES (?, ?, ?, ?, ?)",
     args: [name, description, guidelines || defaultGuidelines, maxMembers || 20, agentId || ""],
   });
+  notifySubscribers("pool", name, "pool_created", { creatorId: agentId }).catch(() => {});
   return json({ ok: true, name });
 }
 
@@ -767,6 +772,26 @@ async function handleMcpRequest(req: Request): Promise<Response> {
       id: null,
       error: { code: -32700, message: "Parse error" }
     }, 400);
+  }
+}
+
+// Fire webhooks for push subscriptions (non-blocking)
+async function firePushNotification(webhookUrl: string, payload: object, secret?: string): Promise<void> {
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (secret) headers["X-LiteHub-Secret"] = secret;
+    await fetch(webhookUrl, { method: "POST", headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(5000) });
+  } catch { /* non-critical */ }
+}
+
+async function notifySubscribers(scope: string, scopeName: string, event: string, data: object): Promise<void> {
+  const db = await getDb();
+  const rs = await db.execute({
+    sql: "SELECT webhook_url, secret FROM push_subscriptions WHERE scope = ? AND scope_name = ?",
+    args: [scope, scopeName],
+  });
+  for (const row of rs.rows as any[]) {
+    firePushNotification(row.webhook_url, { event, scope, scopeName, ...data }, row.secret);
   }
 }
 
