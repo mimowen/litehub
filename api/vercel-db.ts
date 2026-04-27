@@ -100,6 +100,17 @@ const DDLs = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_acp_context ON acp_runs(context_id)`,
   `CREATE INDEX IF NOT EXISTS idx_acp_pool ON acp_runs(pool)`,
+  // Safety migrations for a2a_tasks/acp_runs (in case tables were created with old schema)
+  `ALTER TABLE a2a_tasks ADD COLUMN description TEXT`,
+  `ALTER TABLE a2a_tasks ADD COLUMN queue TEXT`,
+  `ALTER TABLE a2a_tasks ADD COLUMN agent_id TEXT`,
+  `ALTER TABLE a2a_tasks ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))`,
+  `ALTER TABLE acp_runs ADD COLUMN context_id TEXT`,
+  `ALTER TABLE acp_runs ADD COLUMN pool TEXT`,
+  `ALTER TABLE acp_runs ADD COLUMN agent_id TEXT`,
+  `ALTER TABLE acp_runs ADD COLUMN role TEXT DEFAULT 'participant'`,
+  `ALTER TABLE acp_runs ADD COLUMN guidelines TEXT`,
+  `ALTER TABLE acp_runs ADD COLUMN ended_at TEXT`,
 ];
 
 async function initDb(client: Client) {

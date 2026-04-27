@@ -46,16 +46,16 @@ interface RouteEntry {
 const ROUTE_ENTRIES: RouteEntry[] = [
   // A2A
   { pattern: "a2a/tasks/{id}",      handler: handleA2AGetTask,       auth: false },
-  { pattern: "a2a/tasks",           handler: handleA2ACreateTask,    auth: true  },
+  { pattern: "a2a/tasks",           handler: handleA2ATasks,         auth: false  },
   { pattern: "a2a/tasks/cancel",    handler: handleA2ACancelTask,    auth: true  },
   { pattern: "a2a/tasks/pushNotificationConfig/set", handler: handleA2ASetPushNotification, auth: true },
   // ACP
   { pattern: "acp/runs/{id}",       handler: handleACPGetRun,        auth: false },
   { pattern: "acp/contexts/{id}",   handler: handleACPGetContext,    auth: false },
   { pattern: "acp/contexts/{id}/messages", handler: handleACPGetContextMessages, auth: false },
-  { pattern: "acp/runs",            handler: handleACPCreateRun,     auth: true  },
+  { pattern: "acp/runs",            handler: handleACPRuns,          auth: false  },
   { pattern: "acp/runs/cancel",     handler: handleACPCancelRun,     auth: true  },
-  { pattern: "acp/contexts",        handler: handleACPCreateContext, auth: true  },
+  { pattern: "acp/contexts",        handler: handleACPContexts,      auth: false  },
   { pattern: "acp/contexts/join",   handler: handleACPJoinContext,   auth: true  },
   { pattern: "acp/contexts/leave",  handler: handleACPLeaveContext,  auth: true  },
   { pattern: "acp/agents",          handler: handleACPAgents,        auth: false },
@@ -368,6 +368,8 @@ async function handlePoolSpeak(req: Request): Promise<Response> {
     sql: "INSERT INTO pool_messages (id, pool, agent_id, content, reply_to, tags, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
     args: [id, pool, agentId, content, replyTo || null, JSON.stringify(tags || []), JSON.stringify(metadata || {})],
   });
+  // Fire push notifications for pool messages (non-blocking)
+  notifySubscribers("pool", pool, "message_sent", { messageId: id, senderId: agentId }).catch(() => {});
   return json({ ok: true, id });
 }
 
@@ -1015,11 +1017,11 @@ async function firePushNotification(webhookUrl: string, payload: object, secret?
 async function notifySubscribers(scope: string, scopeName: string, event: string, data: object): Promise<void> {
   const db = await getDb();
   const rs = await db.execute({
-    sql: "SELECT webhook_url, secret FROM push_subscriptions WHERE scope = ? AND scope_name = ?",
+    sql: "SELECT target_url, secret FROM push_subscriptions WHERE scope = ? AND scope_name = ?",
     args: [scope, scopeName],
   });
   for (const row of rs.rows as any[]) {
-    firePushNotification(row.webhook_url, { event, scope, scopeName, ...data }, row.secret);
+    firePushNotification(row.target_url, { event, scope, scopeName, ...data }, row.secret);
   }
 }
 
@@ -1166,13 +1168,15 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
       if (!agentId) return { ok: false, error: "Missing agentId" };
       const agentErr = await ensureAgent(db, agentId);
       if (agentErr) return await getJson(agentErr);
-      const queueName = `a2a:${targetAgentId || agentId}:${taskId || crypto.randomUUID()}`;
-      await db.execute({ sql: "INSERT OR IGNORE INTO pointers (queue, agent_id, status, priority) VALUES (?, ?, 'pending', ?)", args: [queueName, agentId, metadata?.priority ?? 5] });
-      // Produce into the queue
+      const realTaskId = taskId || crypto.randomUUID();
+      const queueName = `a2a:${targetAgentId || agentId}:${realTaskId}`;
+      // Insert into a2a_tasks table for A2A protocol tracking
+      await db.execute({ sql: "INSERT OR IGNORE INTO a2a_tasks (id, name, description, status, queue, agent_id) VALUES (?, ?, ?, 'pending', ?, ?)", args: [realTaskId, name ?? '', JSON.stringify(input ?? {}), queueName, agentId] });
+      // Produce the task message into the queue
       const produceReq = new Request(`${new URL(req.url).origin}/api/agent/produce`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': req.headers.get('Authorization') || '' },
-        body: JSON.stringify({ agentId, queue: queueName, data: JSON.stringify({ taskId: taskId || queueName.split(':')[2], name, input, messageId, metadata }) })
+        body: JSON.stringify({ agentId, queue: queueName, data: JSON.stringify({ taskId: realTaskId, name, input, messageId, metadata }) })
       });
       return await getJson(await handleProduce(produceReq));
     }
@@ -1180,11 +1184,11 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
       const { taskId } = args;
       if (!taskId) return { ok: false, error: "Missing taskId" };
       const db = await getDb();
-      const rs = await db.execute({ sql: "SELECT queue, agent_id, status, priority, created_at FROM pointers WHERE queue LIKE ? ORDER BY created_at DESC LIMIT 1", args: [`a2a:%:${taskId}`] });
+      const rs = await db.execute({ sql: "SELECT id, name, description, status, queue, agent_id, created_at, updated_at FROM a2a_tasks WHERE id = ?", args: [taskId] });
       if (!rs.rows?.length) return { ok: false, error: "Task not found" };
-      const pointer = rs.rows[0] as any;
-      const msgRs = await db.execute({ sql: "SELECT data, created_at FROM pointers WHERE queue = ? ORDER BY created_at", args: [pointer.queue] });
-      return { taskId, queueName: pointer.queue, status: pointer.status, priority: pointer.priority, createdAt: pointer.created_at, messages: msgRs.rows?.map((r: any) => ({ data: r.data, createdAt: r.created_at })) ?? [] };
+      const task = rs.rows[0] as any;
+      const msgRs = await db.execute({ sql: "SELECT data, created_at FROM pointers WHERE queue = ? ORDER BY created_at", args: [task.queue] });
+      return { taskId: task.id, name: task.name, description: task.description, queueName: task.queue, status: task.status, agentId: task.agent_id, createdAt: task.created_at, updatedAt: task.updated_at, messages: msgRs.rows?.map((r: any) => ({ data: r.data, createdAt: r.created_at })) ?? [] };
     }
     case "a2a_cancel_task": {
       const { taskId, agentId } = args;
@@ -1192,19 +1196,19 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
       const db = await getDb();
       const agentErr = await ensureAgent(db, agentId);
       if (agentErr) return await getJson(agentErr);
-      const rs = await db.execute({ sql: "UPDATE pointers SET status = 'cancelled' WHERE queue LIKE ? AND agent_id = ? AND status = 'pending'", args: [`a2a:%:${taskId}`, agentId] });
+      const rs = await db.execute({ sql: "UPDATE a2a_tasks SET status = 'cancelled', updated_at = datetime('now') WHERE id = ? AND agent_id = ? AND status = 'pending'", args: [taskId, agentId] });
       return { ok: true, cancelled: rs.rowsAffected ?? 0 };
     }
     case "a2a_list_tasks": {
       const { agentId, status, limit } = args;
       const db = await getDb();
-      let sql = "SELECT DISTINCT queue, agent_id, status, priority, created_at FROM pointers WHERE queue LIKE 'a2a:%'";
+      let sql = "SELECT id, name, description, status, queue, agent_id, created_at, updated_at FROM a2a_tasks WHERE 1=1";
       const a: any[] = [];
       if (agentId) { sql += " AND agent_id = ?"; a.push(agentId); }
       if (status) { sql += " AND status = ?"; a.push(status); }
       sql += " ORDER BY created_at DESC LIMIT ?"; a.push(limit ?? 20);
       const rs = await db.execute({ sql, args: a });
-      return { tasks: rs.rows?.map((r: any) => ({ queueName: r.queue, agentId: r.agent_id, status: r.status, priority: r.priority, createdAt: r.created_at, taskId: r.queue.split(':')[2] })) ?? [] };
+      return { tasks: rs.rows?.map((r: any) => ({ taskId: r.id, name: r.name, queueName: r.queue, agentId: r.agent_id, status: r.status, createdAt: r.created_at, updatedAt: r.updated_at })) ?? [] };
     }
     case "a2a_set_push_notification": {
       const { agentId, webhookUrl, event } = args;
@@ -1212,15 +1216,15 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
       const db = await getDb();
       const agentErr = await ensureAgent(db, agentId);
       if (agentErr) return await getJson(agentErr);
-      await db.execute({ sql: "INSERT OR REPLACE INTO push_subscriptions (agent_id, scope, scope_name, webhook_url, event, created_at) VALUES (?, 'a2a', ?, ?, ?, datetime('now'))", args: [agentId, agentId, webhookUrl, event || 'task_updated'] });
+      await db.execute({ sql: "INSERT OR REPLACE INTO push_subscriptions (id, subscriber_id, target_url, scope, scope_name, secret, created_at) VALUES (?, ?, ?, 'a2a', ?, '', datetime('now'))", args: [`${agentId}-a2a-${Date.now()}`, agentId, webhookUrl, agentId] });
       return { ok: true, message: "Push notification configured" };
     }
     case "a2a_get_push_notification": {
       const { agentId } = args;
       if (!agentId) return { ok: false, error: "Missing agentId" };
       const db = await getDb();
-      const rs = await db.execute({ sql: "SELECT scope_name, webhook_url, event, created_at FROM push_subscriptions WHERE agent_id = ? AND scope = 'a2a'", args: [agentId] });
-      return { subscriptions: rs.rows?.map((r: any) => ({ scopeName: r.scope_name, webhookUrl: r.webhook_url, event: r.event, createdAt: r.created_at })) ?? [] };
+      const rs = await db.execute({ sql: "SELECT scope_name, target_url, created_at FROM push_subscriptions WHERE subscriber_id = ? AND scope = 'a2a'", args: [agentId] });
+      return { subscriptions: rs.rows?.map((r: any) => ({ scopeName: r.scope_name, targetUrl: r.target_url, createdAt: r.created_at })) ?? [] };
     }
 
     // ── ACP Protocol Tools ──
@@ -1242,7 +1246,7 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
       const rs = await db.execute({ sql: "SELECT name, description, guidelines, creator_id, created_at FROM pools WHERE name = ?", args: [`acp:${runId}`] });
       if (!rs.rows?.length) return { ok: false, error: "Run not found" };
       const pool = rs.rows[0] as any;
-      const memRs = await db.execute({ sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool_name = ?", args: [`acp:${runId}`] });
+      const memRs = await db.execute({ sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool = ?", args: [`acp:${runId}`] });
       return { runId, name: pool.name, description: pool.description, guidelines: pool.guidelines, creatorId: pool.creator_id, createdAt: pool.created_at, members: memRs.rows?.map((r: any) => ({ agentId: r.agent_id, joinedAt: r.joined_at })) ?? [] };
     }
     case "acp_cancel_run": {
@@ -1281,7 +1285,7 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
       const rs = await db.execute({ sql: "SELECT name, description, guidelines, creator_id, max_members, created_at FROM pools WHERE name = ?", args: [contextId] });
       if (!rs.rows?.length) return { ok: false, error: "Context not found" };
       const pool = rs.rows[0] as any;
-      const memRs = await db.execute({ sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool_name = ?", args: [contextId] });
+      const memRs = await db.execute({ sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool = ?", args: [contextId] });
       return { contextId, name: pool.name, description: pool.description, guidelines: pool.guidelines, creatorId: pool.creator_id, maxMembers: pool.max_members, createdAt: pool.created_at, members: memRs.rows?.map((r: any) => ({ agentId: r.agent_id, joinedAt: r.joined_at })) ?? [] };
     }
 
@@ -1334,6 +1338,29 @@ async function handleAgentCard(_req: Request): Promise<Response> {
 // ─── A2A Protocol Handlers (Google Agent-to-Agent) ────────────────────────
 // Maps to existing Queue operations (produce/consume)
 
+// A2A Tasks - dispatches GET (list) vs POST (create)
+async function handleA2ATasks(req: Request): Promise<Response> {
+  if (req.method === 'GET') {
+    return handleA2AListTasks(req);
+  }
+  // POST requires auth
+  if (!validateAuth(req)) {
+    return json({ ok: false, error: 'Unauthorized' }, 401);
+  }
+  return handleA2ACreateTask(req);
+}
+
+// GET /api/a2a/tasks — List A2A tasks
+async function handleA2AListTasks(req: Request): Promise<Response> {
+  try {
+    const db = await getDb();
+    const rs = await db.execute({ sql: "SELECT id, name, description, status, queue, agent_id, created_at, updated_at FROM a2a_tasks ORDER BY created_at DESC LIMIT 50", args: [] });
+    return json({ ok: true, tasks: rs.rows?.map((r: any) => ({ taskId: r.id, name: r.name, status: r.status, queueName: r.queue, agentId: r.agent_id, createdAt: r.created_at, updatedAt: r.updated_at })) ?? [] });
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
 async function handleA2ACreateTask(req: Request): Promise<Response> {
   try {
     const body = await req.json();
@@ -1345,18 +1372,20 @@ async function handleA2ACreateTask(req: Request): Promise<Response> {
     if (agentErr) return await getJson(agentErr);
     
     // Use existing queue/pointer system
-    const queueName = `a2a:${targetAgentId || agentId}:${taskId || crypto.randomUUID()}`;
+    const realTaskId = taskId || crypto.randomUUID();
+    const queueName = `a2a:${targetAgentId || agentId}:${realTaskId}`;
     
+    // Insert into a2a_tasks for protocol tracking
     await db.execute({
-      sql: "INSERT OR IGNORE INTO pointers (queue, agent_id, status, priority) VALUES (?, ?, 'pending', ?)",
-      args: [queueName, agentId, metadata?.priority ?? 5]
+      sql: "INSERT OR IGNORE INTO a2a_tasks (id, name, description, status, queue, agent_id) VALUES (?, ?, ?, 'pending', ?, ?)",
+      args: [realTaskId, name ?? '', JSON.stringify(input ?? {}), queueName, agentId]
     });
     
     // Create the task via produce
     const produceReq = new Request(req.url.replace('/a2a/tasks', '/agent/produce'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': req.headers.get('Authorization') || '' },
-      body: JSON.stringify({ agentId, queueName, payload: { taskId, name, input, messageId, metadata } })
+      body: JSON.stringify({ agentId, queue: queueName, data: JSON.stringify({ taskId: realTaskId, name, input, messageId, metadata }) })
     });
     return await handleProduce(produceReq);
   } catch (err) {
@@ -1372,10 +1401,10 @@ async function handleA2ACancelTask(req: Request): Promise<Response> {
     if (agentErr) return await getJson(agentErr);
     
     const rs = await db.execute({ 
-      sql: "UPDATE pointers SET status = 'cancelled' WHERE queue LIKE ? AND agent_id = ? AND status = 'pending'",
-      args: [`a2a:%:${taskId}`, agentId]
+      sql: "UPDATE a2a_tasks SET status = 'cancelled', updated_at = datetime('now') WHERE id = ? AND agent_id = ?",
+      args: [taskId, agentId]
     });
-    return json({ ok: true, cancelled: rs.rowsAffected ?? rs.rows?.length ?? 0 });
+    return json({ ok: true, cancelled: rs.rowsAffected ?? 0 });
   } catch (err) {
     return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
   }
@@ -1391,9 +1420,9 @@ async function handleA2ASetPushNotification(req: Request): Promise<Response> {
     
     // Store push subscription in push_subscriptions table
     await db.execute({
-      sql: `INSERT OR REPLACE INTO push_subscriptions (agent_id, scope, scope_name, webhook_url, secret, created_at)
-            VALUES (?, 'task', ?, ?, ?, datetime('now'))`,
-      args: [agentId, taskId, webhookUrl, secret ?? '']
+      sql: `INSERT OR REPLACE INTO push_subscriptions (id, subscriber_id, target_url, scope, scope_name, secret, created_at)
+            VALUES (?, ?, ?, 'a2a', ?, ?, datetime('now'))`,
+      args: [`${agentId}-a2a-${taskId}`, agentId, webhookUrl, taskId, secret ?? '']
     });
     return json({ ok: true, message: 'Push notification configured for task' });
   } catch (err) {
@@ -1403,6 +1432,50 @@ async function handleA2ASetPushNotification(req: Request): Promise<Response> {
 
 // ─── ACP Protocol Handlers (Agent Communication Protocol) ─────────────────
 // Maps to existing Pool operations
+
+// ACP Runs - dispatches GET (list) vs POST (create)
+async function handleACPRuns(req: Request): Promise<Response> {
+  if (req.method === 'GET') {
+    return handleACPListRuns(req);
+  }
+  if (!validateAuth(req)) {
+    return json({ ok: false, error: 'Unauthorized' }, 401);
+  }
+  return handleACPCreateRun(req);
+}
+
+// GET /api/acp/runs — List ACP runs
+async function handleACPListRuns(req: Request): Promise<Response> {
+  try {
+    const db = await getDb();
+    const rs = await db.execute({ sql: "SELECT id, context_id, pool, agent_id, role, guidelines, status, created_at, ended_at FROM acp_runs ORDER BY created_at DESC LIMIT 50", args: [] });
+    return json({ ok: true, runs: rs.rows?.map((r: any) => ({ runId: r.id, contextId: r.context_id, poolName: r.pool, agentId: r.agent_id, role: r.role, status: r.status, createdAt: r.created_at, endedAt: r.ended_at })) ?? [] });
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
+
+// ACP Contexts - dispatches GET (list) vs POST (create)
+async function handleACPContexts(req: Request): Promise<Response> {
+  if (req.method === 'GET') {
+    return handleACPListContexts(req);
+  }
+  if (!validateAuth(req)) {
+    return json({ ok: false, error: 'Unauthorized' }, 401);
+  }
+  return handleACPCreateContext(req);
+}
+
+// GET /api/acp/contexts — List ACP contexts (pools used as contexts)
+async function handleACPListContexts(req: Request): Promise<Response> {
+  try {
+    const db = await getDb();
+    const rs = await db.execute({ sql: "SELECT name, description, guidelines, max_members, creator_id, created_at FROM pools ORDER BY created_at DESC LIMIT 50", args: [] });
+    return json({ ok: true, contexts: rs.rows?.map((r: any) => ({ contextId: r.name, name: r.description, guidelines: r.guidelines, maxMembers: r.max_members, creatorId: r.creator_id, createdAt: r.created_at })) ?? [] });
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
+}
 
 async function handleACPCreateRun(req: Request): Promise<Response> {
   try {
@@ -1453,25 +1526,27 @@ async function handleA2AGetTask(req: Request): Promise<Response> {
     if (!taskId) return json({ ok: false, error: "Missing taskId" }, 400);
 
     const db = await getDb();
-    // Find pointer by queue name pattern a2a:*:*:{taskId}
+    // Query a2a_tasks table for task metadata
     const rs = await db.execute({
-      sql: "SELECT queue, agent_id, status, priority, created_at FROM pointers WHERE queue LIKE ? ORDER BY created_at DESC LIMIT 1",
-      args: [`a2a:%:${taskId}`]
+      sql: "SELECT id, name, description, status, queue, agent_id, created_at, updated_at FROM a2a_tasks WHERE id = ?",
+      args: [taskId]
     });
     if (!rs.rows?.length) return json({ ok: false, error: "Task not found" }, 404);
-    const pointer = rs.rows[0] as any;
-    // Get all messages in this queue
+    const task = rs.rows[0] as any;
+    // Get all messages in this queue from pointers
     const msgRs = await db.execute({
       sql: "SELECT data, created_at FROM pointers WHERE queue = ? ORDER BY created_at",
-      args: [pointer.queue]
+      args: [task.queue]
     });
     return json({
-      taskId,
-      queueName: pointer.queue,
-      status: pointer.status,
-      priority: pointer.priority,
-      createdAt: pointer.created_at,
-      messages: msgRs.rows?.map((r: any) => ({ data: r.data, createdAt: r.created_at })) ?? []
+      taskId: task.id,
+      name: task.name,
+      queueName: task.queue,
+      status: task.status,
+      agentId: task.agent_id,
+      createdAt: task.created_at,
+      updatedAt: task.updated_at,
+      messages: msgRs.rows?.map((r: any) => { let d: any = r.data; try { d = JSON.parse(r.data); } catch {} return { data: d, createdAt: r.created_at }; }) ?? []
     });
   } catch (err) {
     return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
@@ -1496,7 +1571,7 @@ async function handleACPGetRun(req: Request): Promise<Response> {
     const pool = rs.rows[0] as any;
     // Get members
     const memRs = await db.execute({
-      sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool_name = ?",
+      sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool = ?",
       args: [`acp:${runId}`]
     });
     return json({
@@ -1529,7 +1604,7 @@ async function handleACPGetContext(req: Request): Promise<Response> {
     if (!rs.rows?.length) return json({ ok: false, error: "Context not found" }, 404);
     const pool = rs.rows[0] as any;
     const memRs = await db.execute({
-      sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool_name = ?",
+      sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool = ?",
       args: [contextId]
     });
     return json({
@@ -1558,14 +1633,14 @@ async function handleACPGetContextMessages(req: Request): Promise<Response> {
 
     const db = await getDb();
     const msgsRs = await db.execute({
-      sql: "SELECT agent_id, message, tags, reply_to, created_at FROM pool_messages WHERE pool_name = ? ORDER BY created_at ASC LIMIT 100",
+      sql: "SELECT agent_id, content, tags, reply_to, created_at FROM pool_messages WHERE pool = ? ORDER BY created_at ASC LIMIT 100",
       args: [contextId]
     });
     return json({
       contextId,
       messages: msgsRs.rows?.map((r: any) => ({
         agentId: r.agent_id,
-        message: r.message,
+        content: r.content,
         tags: r.tags ? JSON.parse(r.tags) : [],
         replyTo: r.reply_to,
         createdAt: r.created_at
@@ -1661,13 +1736,13 @@ const PUBLIC_ROUTES: Record<string, Handler> = {
   "pool/messages": handlePoolMessages,
   "pool/members": handlePoolMembers,
   // A2A Protocol (Google Agent-to-Agent)
-  "a2a/tasks": handleA2ACreateTask,
+  "a2a/tasks": handleA2ATasks,
   "a2a/tasks/cancel": handleA2ACancelTask,
   "a2a/tasks/pushNotificationConfig/set": handleA2ASetPushNotification,
   // ACP Protocol (Agent Communication Protocol)
-  "acp/runs": handleACPCreateRun,
+  "acp/runs": handleACPRuns,
   "acp/runs/cancel": handleACPCancelRun,
-  "acp/contexts": handleACPCreateContext,
+  "acp/contexts": handleACPContexts,
   "acp/contexts/join": handleACPJoinContext,
   "acp/contexts/leave": handleACPLeaveContext,
   // ACP read-only (public for polling)
