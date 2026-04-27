@@ -19,7 +19,7 @@
 ### 1.3 Push Notification Webhook
 - [x] `POST /api/a2a/pushNotificationConfig/set` → 注册 Webhook URL
 - [x] Webhook 触发：produce / consume / pool/speak 时通知所有订阅者
-- [ ] Webhook payload 严格符合 A2A spec：`{ event: "task_updated", taskId, status }`
+- [x] Webhook payload 严格符合 A2A spec：`{ jsonrpc: "2.0", method: "notifications/task_updated", params: { event, taskId, status } }`
 
 ### 1.4 A2A → Queue 适配层
 - [x] Task.status.pending → Queue 消息在 pending
@@ -32,8 +32,8 @@
 ## 阶段二：ACP 协议接入（Pool 通道）
 
 ### 2.1 Agent 发现端点
-- [ ] `GET /acp/agents` → 列出所有注册的 Agent
-- [ ] `GET /acp/agents/{agentId}` → 查询单个 Agent 能力
+- [x] `GET /acp/agents` → 列出所有注册的 Agent
+- [x] `GET /acp/agents/{agentId}` → 查询单个 Agent 能力
 
 ### 2.2 Run 端点（Queue 映射）
 - [x] `POST /acp/runs` → 创建 Run（内部路由到 Queue produce），需认证
@@ -46,9 +46,9 @@
 - [x] `POST /acp/contexts` → 创建 Pool（context.create），需认证
 - [x] `GET /acp/contexts` → 列出所有 Contexts（公开）
 - [x] `GET /acp/contexts/{id}` → 获取 Pool 信息
-- [ ] `POST /acp/contexts/{id}/join` → 加入 Pool
-- [ ] `POST /acp/contexts/{id}/leave` → 离开 Pool
-- [ ] `POST /acp/contexts/{id}/messages` → 在 Pool 发言（speak）
+- [x] `POST /acp/contexts/{id}/join` → 加入 Pool
+- [x] `POST /acp/contexts/{id}/leave` → 离开 Pool
+- [x] `POST /acp/contexts/{id}/messages` → 在 Pool 发言（speak）
 - [x] `GET /acp/contexts/{id}/messages` → 读取 Pool 消息
 
 ### 2.4 ACP → Pool 适配层
@@ -79,18 +79,19 @@
 - [x] curl 验证 ACP runs GET/POST 流程
 - [x] curl 验证 ACP contexts GET list 流程
 - [ ] Webhook push notification 端到端测试
-- [ ] ACP context join/leave/messages 完整流程测试
+- [x] ACP context join/leave/messages 完整流程测试
 
 ---
 
 ## 待完成项（按优先级排序）
 
-1. **ACP Context 写操作** — join/leave/POST messages（当前只读了 GET，写操作未实现）
-2. **ACP Agent 发现端点** — `/acp/agents` 和 `/acp/agents/{agentId}`
-3. **A2A Webhook payload 规范化** — 确保 payload 严格符合 A2A spec
-4. **端到端测试** — Webhook 通知 + Pool 协作完整链路
-5. **本地开发服务器路由** — `server.ts` 不走 vercel.json，A2A/ACP 路径需独立适配
-6. **ACP Run SSE 流式更新** — Vercel Edge Runtime 对 SSE 有限制，可能需要降级方案
+1. ~~ACP Context 写操作~~ — ✅ 已完成
+2. ~~ACP Agent 发现端点~~ — ✅ 已完成
+3. ~~A2A Webhook payload 规范化~~ — ✅ 已完成
+4. ~~ACP context join/leave/messages 完整流程测试~~ — ✅ 已完成
+5. **端到端 Webhook 通知测试** — 需要外部 webhook 接收端验证
+6. **本地开发服务器路由** — `server.ts` 不走 vercel.json，A2A/ACP 路径需独立适配（已添加 src/app.ts 路由）
+7. **ACP Run SSE 流式更新** — Vercel Edge Runtime 对 SSE 有限制，可能需要降级方案
 
 ---
 
@@ -99,10 +100,10 @@
 ```
 1. A2A Agent Card + tasks/send (最小可行)  ✅ 已完成
 2. A2A push notification webhook           ✅ 基本完成
-3. ACP context (Pool 映射)                  ⬜ GET 完成，写操作待补充
-4. ACP run (Queue 映射)                     ✅ 基本完成
-5. ACP agent 发现端点                       ⬜ 未开始
-6. 测试 + 文档                              🔵 进行中
+3. ACP context (Pool 映射)                  ✅ 已完成（join/leave/speak + GET）
+4. ACP run (Queue 映射)                     ✅ 已完成
+5. ACP agent 发现端点                       ✅ 已完成
+6. 测试 + 文档                              🔵 进行中（待：Webhook E2E 测试）
 ```
 
 ---

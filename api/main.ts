@@ -51,8 +51,12 @@ const ROUTE_ENTRIES: RouteEntry[] = [
   { pattern: "a2a/tasks/pushNotificationConfig/set", handler: handleA2ASetPushNotification, auth: true },
   // ACP
   { pattern: "acp/runs/{id}",       handler: handleACPGetRun,        auth: false },
-  { pattern: "acp/contexts/{id}",   handler: handleACPGetContext,    auth: false },
   { pattern: "acp/contexts/{id}/messages", handler: handleACPGetContextMessages, auth: false },
+  { pattern: "acp/contexts/{id}/join",  handler: handleACPJoinContext,  auth: true },
+  { pattern: "acp/contexts/{id}/leave", handler: handleACPLeaveContext, auth: true },
+  { pattern: "acp/contexts/{id}/speak", handler: handleACPSpeakContext, auth: true },
+  { pattern: "acp/contexts/{id}",   handler: handleACPGetContext,    auth: false },
+  { pattern: "acp/agents/{agentId}", handler: handleACPAgents,       auth: false },
   { pattern: "acp/runs",            handler: handleACPRuns,          auth: false  },
   { pattern: "acp/runs/cancel",     handler: handleACPCancelRun,     auth: true  },
   { pattern: "acp/contexts",        handler: handleACPContexts,      auth: false  },
@@ -900,6 +904,45 @@ const MCP_TOOLS = [
       },
       required: ["contextId"]
     }
+  },
+  {
+    name: "acp_join_context",
+    description: "加入一个 ACP Context（加入 Pool 协作）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "Agent ID" },
+        contextId: { type: "string", description: "Context ID（Pool 名称）" }
+      },
+      required: ["agentId", "contextId"]
+    }
+  },
+  {
+    name: "acp_leave_context",
+    description: "离开一个 ACP Context（离开 Pool）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "Agent ID" },
+        contextId: { type: "string", description: "Context ID（Pool 名称）" }
+      },
+      required: ["agentId", "contextId"]
+    }
+  },
+  {
+    name: "acp_speak_context",
+    description: "在 ACP Context 中发送消息（Pool speak）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: { type: "string", description: "Agent ID" },
+        contextId: { type: "string", description: "Context ID（Pool 名称）" },
+        content: { type: "string", description: "消息内容" },
+        replyTo: { type: "string", description: "回复的消息 ID，可选" },
+        tags: { type: "array", items: { type: "string" }, description: "标签，可选" }
+      },
+      required: ["agentId", "contextId", "content"]
+    }
   }
 ];
 
@@ -1010,7 +1053,13 @@ async function firePushNotification(webhookUrl: string, payload: object, secret?
   try {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (secret) headers["X-LiteHub-Secret"] = secret;
-    await fetch(webhookUrl, { method: "POST", headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(5000) });
+    // A2A spec compliant payload wrapping
+    const a2aPayload = {
+      jsonrpc: "2.0",
+      method: "notifications/task_updated",
+      params: payload,
+    };
+    await fetch(webhookUrl, { method: "POST", headers, body: JSON.stringify(a2aPayload), signal: AbortSignal.timeout(5000) });
   } catch { /* non-critical */ }
 }
 
@@ -1020,8 +1069,23 @@ async function notifySubscribers(scope: string, scopeName: string, event: string
     sql: "SELECT target_url, secret FROM push_subscriptions WHERE scope = ? AND scope_name = ?",
     args: [scope, scopeName],
   });
+  // A2A spec: { event, taskId, status } for A2A scope
+  // ACP spec: { event, runId/contextId, ... } for ACP/Pool scope
   for (const row of rs.rows as any[]) {
-    firePushNotification(row.target_url, { event, scope, scopeName, ...data }, row.secret);
+    let payload: any;
+    if (scope === 'a2a' || scope === 'queue') {
+      // A2A spec compliant: task_updated notification
+      const pointerId = (data as any).pointerId || (data as any).messageId || scopeName;
+      const status = event.includes('produced') || event.includes('created') ? 'pending'
+        : event.includes('consumed') ? 'working'
+        : event.includes('completed') ? 'completed'
+        : event.includes('cancelled') ? 'cancelled'
+        : 'pending';
+      payload = { event: 'task_updated', taskId: pointerId, status, ...data };
+    } else {
+      payload = { event, scope, scopeName, ...data };
+    }
+    firePushNotification(row.target_url, payload, row.secret);
   }
 }
 
@@ -1287,6 +1351,44 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
       const pool = rs.rows[0] as any;
       const memRs = await db.execute({ sql: "SELECT agent_id, joined_at FROM pool_members WHERE pool = ?", args: [contextId] });
       return { contextId, name: pool.name, description: pool.description, guidelines: pool.guidelines, creatorId: pool.creator_id, maxMembers: pool.max_members, createdAt: pool.created_at, members: memRs.rows?.map((r: any) => ({ agentId: r.agent_id, joinedAt: r.joined_at })) ?? [] };
+    }
+    case "acp_join_context": {
+      const { agentId, contextId } = args;
+      if (!agentId || !contextId) return { ok: false, error: "Missing agentId or contextId" };
+      const db = await getDb();
+      const agentErr = await ensureAgent(db, agentId);
+      if (agentErr) return await getJson(agentErr);
+      const poolRs = await db.execute({ sql: "SELECT max_members FROM pools WHERE name = ?", args: [contextId] });
+      if (!poolRs.rows.length) return { ok: false, error: "Context not found" };
+      const maxMembers = (poolRs.rows[0] as any).max_members;
+      const countRs = await db.execute({ sql: "SELECT COUNT(*) as count FROM pool_members WHERE pool = ?", args: [contextId] });
+      if ((countRs.rows[0] as any).count >= maxMembers) return { ok: false, error: "Context is full" };
+      await db.execute({ sql: "INSERT OR IGNORE INTO pool_members (pool, agent_id) VALUES (?, ?)", args: [contextId, agentId] });
+      notifySubscribers('pool', contextId, 'agent_joined', { contextId, agentId }).catch(() => {});
+      return { ok: true, contextId, agentId };
+    }
+    case "acp_leave_context": {
+      const { agentId, contextId } = args;
+      if (!agentId || !contextId) return { ok: false, error: "Missing agentId or contextId" };
+      const db = await getDb();
+      const agentErr = await ensureAgent(db, agentId);
+      if (agentErr) return await getJson(agentErr);
+      await db.execute({ sql: "DELETE FROM pool_members WHERE pool = ? AND agent_id = ?", args: [contextId, agentId] });
+      notifySubscribers('pool', contextId, 'agent_left', { contextId, agentId }).catch(() => {});
+      return { ok: true, contextId, agentId };
+    }
+    case "acp_speak_context": {
+      const { agentId, contextId, content, replyTo, tags } = args;
+      if (!agentId || !contextId || !content) return { ok: false, error: "Missing agentId, contextId, or content" };
+      const db = await getDb();
+      const agentErr = await ensureAgent(db, agentId);
+      if (agentErr) return await getJson(agentErr);
+      const poolRs = await db.execute({ sql: "SELECT name FROM pools WHERE name = ?", args: [contextId] });
+      if (!poolRs.rows.length) return { ok: false, error: "Context not found" };
+      const id = crypto.randomUUID();
+      await db.execute({ sql: "INSERT INTO pool_messages (id, pool, agent_id, content, reply_to, tags, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)", args: [id, contextId, agentId, content, replyTo || null, JSON.stringify(tags || []), JSON.stringify({})] });
+      notifySubscribers('pool', contextId, 'message_sent', { contextId, messageId: id, senderId: agentId }).catch(() => {});
+      return { ok: true, id, contextId };
     }
 
     default:
@@ -1673,18 +1775,24 @@ async function handleACPCreateContext(req: Request): Promise<Response> {
 
 async function handleACPJoinContext(req: Request): Promise<Response> {
   try {
-    const body = await req.json();
-    const { agentId, contextId } = body as { agentId: string; contextId: string };
+    const b = await body(req);
+    const agentId = b.agentId;
+    // contextId can come from body or from URL params (pattern: acp/contexts/{id}/join)
+    const params = (req as any)._params as Record<string, string> | undefined;
+    const contextId = b.contextId || params?.id || '';
+    if (!agentId || !contextId) return json({ ok: false, error: 'Missing agentId or contextId' }, 400);
     const db = await getDb();
     const agentErr = await ensureAgent(db, agentId);
     if (agentErr) return await getJson(agentErr);
-    
-    const joinReq = new Request(req.url.replace('/acp/contexts/join', '/pool/join'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': req.headers.get('Authorization') || '' },
-      body: JSON.stringify({ agentId, poolName: contextId })
-    });
-    return await handlePoolJoin(joinReq);
+    // Directly join the Pool (contextId = pool name)
+    const poolRs = await db.execute({ sql: "SELECT max_members FROM pools WHERE name = ?", args: [contextId] });
+    if (poolRs.rows.length === 0) return json({ ok: false, error: 'Context not found' }, 404);
+    const maxMembers = (poolRs.rows[0] as any).max_members;
+    const countRs = await db.execute({ sql: "SELECT COUNT(*) as count FROM pool_members WHERE pool = ?", args: [contextId] });
+    if ((countRs.rows[0] as any).count >= maxMembers) return json({ ok: false, error: 'Context is full' }, 403);
+    await db.execute({ sql: "INSERT OR IGNORE INTO pool_members (pool, agent_id) VALUES (?, ?)", args: [contextId, agentId] });
+    notifySubscribers('pool', contextId, 'agent_joined', { contextId, agentId }).catch(() => {});
+    return json({ ok: true, contextId, agentId });
   } catch (err) {
     return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
   }
@@ -1692,26 +1800,74 @@ async function handleACPJoinContext(req: Request): Promise<Response> {
 
 async function handleACPLeaveContext(req: Request): Promise<Response> {
   try {
-    const body = await req.json();
-    const { agentId, contextId } = body as { agentId: string; contextId: string };
+    const b = await body(req);
+    const agentId = b.agentId;
+    const params = (req as any)._params as Record<string, string> | undefined;
+    const contextId = b.contextId || params?.id || '';
+    if (!agentId || !contextId) return json({ ok: false, error: 'Missing agentId or contextId' }, 400);
     const db = await getDb();
     const agentErr = await ensureAgent(db, agentId);
     if (agentErr) return await getJson(agentErr);
-    
-    const leaveReq = new Request(req.url.replace('/acp/contexts/leave', '/pool/leave'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': req.headers.get('Authorization') || '' },
-      body: JSON.stringify({ agentId, poolName: contextId })
-    });
-    return await handlePoolLeave(leaveReq);
+    await db.execute({ sql: "DELETE FROM pool_members WHERE pool = ? AND agent_id = ?", args: [contextId, agentId] });
+    notifySubscribers('pool', contextId, 'agent_left', { contextId, agentId }).catch(() => {});
+    return json({ ok: true, contextId, agentId });
   } catch (err) {
     return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
   }
 }
 
+// GET /api/acp/agents — List all agents (public)
+// GET /api/acp/agents/{agentId} — Get single agent details (public)
 async function handleACPAgents(req: Request): Promise<Response> {
-  // Public endpoint - list all registered agents
+  const params = (req as any)._params as Record<string, string> | undefined;
+  const agentId = params?.agentId;
+  if (agentId) {
+    // Single agent detail
+    const db = await getDb();
+    const rs = await db.execute({ sql: "SELECT agent_id, name, role, queues, poll_interval, registered_at FROM agents WHERE agent_id = ?", args: [agentId] });
+    if (!rs.rows.length) return json({ ok: false, error: 'Agent not found' }, 404);
+    const r = rs.rows[0] as any;
+    // Also get which pools this agent is in
+    const poolRs = await db.execute({ sql: "SELECT pool FROM pool_members WHERE agent_id = ?", args: [agentId] });
+    return json({
+      ok: true,
+      agent: {
+        agentId: r.agent_id, name: r.name, role: r.role,
+        queues: JSON.parse(r.queues || '[]'), pollInterval: r.poll_interval,
+        registeredAt: r.registered_at,
+        pools: poolRs.rows.map((p: any) => p.pool),
+      }
+    });
+  }
+  // List all agents
   return handleAgents(req);
+}
+
+// POST /api/acp/contexts/{id}/messages — Speak in a context (Pool)
+async function handleACPSpeakContext(req: Request): Promise<Response> {
+  try {
+    const b = await body(req);
+    const agentId = b.agentId;
+    const content = b.content;
+    const params = (req as any)._params as Record<string, string> | undefined;
+    const contextId = b.contextId || params?.id || '';
+    if (!agentId || !contextId || !content) return json({ ok: false, error: 'Missing agentId, contextId, or content' }, 400);
+    const db = await getDb();
+    const agentErr = await ensureAgent(db, agentId);
+    if (agentErr) return await getJson(agentErr);
+    // Verify context exists
+    const poolRs = await db.execute({ sql: "SELECT name FROM pools WHERE name = ?", args: [contextId] });
+    if (poolRs.rows.length === 0) return json({ ok: false, error: 'Context not found' }, 404);
+    const id = crypto.randomUUID();
+    await db.execute({
+      sql: "INSERT INTO pool_messages (id, pool, agent_id, content, reply_to, tags, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      args: [id, contextId, agentId, content, b.replyTo || null, JSON.stringify(b.tags || []), JSON.stringify(b.metadata || {})],
+    });
+    notifySubscribers('pool', contextId, 'message_sent', { contextId, messageId: id, senderId: agentId }).catch(() => {});
+    return json({ ok: true, id, contextId });
+  } catch (err) {
+    return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
+  }
 }
 
 async function handleACPGetMessages(req: Request): Promise<Response> {

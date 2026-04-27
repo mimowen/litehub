@@ -582,5 +582,159 @@ app.post("/api/pool/speak", async (c) => {
   return c.json({ ok: true, message: msg });
 });
 
+// ─── A2A Protocol Routes (Google Agent-to-Agent) ─────────────────────
+
+app.get("/.well-known/agent-card.json", (c) => {
+  const baseUrl = new URL(c.req.url).origin;
+  return c.json({
+    name: "LiteHub",
+    version: "2.0.0",
+    description: "Distributed Agent Collaboration Hub — Queue + Pool messaging",
+    capabilities: {
+      queue: { produce: `${baseUrl}/api/agent/produce`, consume: `${baseUrl}/api/agent/consume`, peek: `${baseUrl}/api/peek` },
+      pool: { create: `${baseUrl}/api/pool/create`, join: `${baseUrl}/api/pool/join`, speak: `${baseUrl}/api/pool/speak`, messages: `${baseUrl}/api/pool/messages` },
+      a2a: { tasks: `${baseUrl}/api/a2a/tasks`, pushNotificationConfig: `${baseUrl}/api/a2a/tasks/pushNotificationConfig/set` },
+      acp: { runs: `${baseUrl}/api/acp/runs`, contexts: `${baseUrl}/api/acp/contexts` },
+      mcp: { endpoint: `${baseUrl}/api/mcp`, config: `${baseUrl}/api/mcp` },
+    },
+    protocols: ["a2a", "acp", "mcp"],
+  });
+});
+
+// A2A Tasks
+app.get("/api/a2a/tasks", (c) => {
+  // TODO: query a2a_tasks table — fallback to empty for local mode
+  return c.json({ ok: true, tasks: [] });
+});
+
+app.post("/api/a2a/tasks", async (c) => {
+  const b = await c.req.json();
+  const { agentId, targetAgentId, name, input, taskId } = b;
+  if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
+  if (!ensureAgent(agentId)) return c.json({ ok: false, error: "Agent not registered" }, 403);
+  const realTaskId = taskId || crypto.randomUUID();
+  const queueName = `a2a:${targetAgentId || agentId}:${realTaskId}`;
+  ensureQueue(queueName, agentId);
+  const pointer = produce(queueName, JSON.stringify({ taskId: realTaskId, name, input }), agentId, {});
+  return c.json({ ok: true, taskId: realTaskId, pointer });
+});
+
+app.get("/api/a2a/tasks/:id", (c) => {
+  // TODO: query a2a_tasks + pointers
+  return c.json({ ok: false, error: "Not implemented in local mode yet" }, 501);
+});
+
+app.post("/api/a2a/tasks/cancel", async (c) => {
+  // TODO: update a2a_tasks status
+  return c.json({ ok: false, error: "Not implemented in local mode yet" }, 501);
+});
+
+app.post("/api/a2a/tasks/pushNotificationConfig/set", async (c) => {
+  const b = await c.req.json();
+  if (!b.agentId || !b.webhookUrl) return c.json({ ok: false, error: "Missing agentId or webhookUrl" }, 400);
+  // TODO: store push subscription in local DB
+  return c.json({ ok: true, message: "Push notification configured (local mode — webhook not persisted)" });
+});
+
+// ─── ACP Protocol Routes (Agent Communication Protocol) ───────────────
+
+// ACP Runs
+app.get("/api/acp/runs", (c) => {
+  // ACP runs are pools with name starting "acp:"
+  const allPools = listPools();
+  const runs = allPools.filter((p: any) => p.name.startsWith("acp:"));
+  return c.json({ ok: true, runs });
+});
+
+app.post("/api/acp/runs", async (c) => {
+  const b = await c.req.json();
+  const { agentId, runId, name } = b;
+  if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
+  if (!ensureAgent(agentId)) return c.json({ ok: false, error: "Agent not registered" }, 403);
+  const poolName = `acp:${runId || crypto.randomUUID()}`;
+  const pool = createPool(poolName, name || poolName);
+  return c.json({ ok: true, runId: poolName.replace('acp:', ''), pool });
+});
+
+app.get("/api/acp/runs/:id", (c) => {
+  const runId = c.req.param("id");
+  const pool = getPool(`acp:${runId}`);
+  if (!pool) return c.json({ ok: false, error: "Run not found" }, 404);
+  return c.json({ ok: true, runId, pool, members: listMembers(`acp:${runId}`) });
+});
+
+app.post("/api/acp/runs/cancel", async (c) => {
+  return c.json({ ok: false, error: "Not implemented in local mode yet" }, 501);
+});
+
+// ACP Contexts
+app.get("/api/acp/contexts", (c) => {
+  return c.json({ ok: true, contexts: listPools() });
+});
+
+app.post("/api/acp/contexts", async (c) => {
+  const b = await c.req.json();
+  const { agentId, contextId, name, guidelines } = b;
+  if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
+  if (!ensureAgent(agentId)) return c.json({ ok: false, error: "Agent not registered" }, 403);
+  const id = contextId || crypto.randomUUID();
+  const pool = createPool(id, name || id, guidelines);
+  return c.json({ ok: true, contextId: id, pool });
+});
+
+app.get("/api/acp/contexts/:id", (c) => {
+  const contextId = c.req.param("id");
+  const pool = getPool(contextId);
+  if (!pool) return c.json({ ok: false, error: "Context not found" }, 404);
+  return c.json({ ok: true, contextId, pool, members: listMembers(contextId) });
+});
+
+app.get("/api/acp/contexts/:id/messages", (c) => {
+  const contextId = c.req.param("id");
+  const result = getMessages(contextId, {});
+  return c.json({ ok: true, contextId, messages: result.messages });
+});
+
+app.post("/api/acp/contexts/:id/join", async (c) => {
+  const contextId = c.req.param("id");
+  const b = await c.req.json();
+  const { agentId } = b;
+  if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
+  const result = joinPool(contextId, agentId);
+  if (!result.ok) return c.json(result, 400);
+  return c.json({ ok: true, contextId, agentId });
+});
+
+app.post("/api/acp/contexts/:id/leave", async (c) => {
+  const contextId = c.req.param("id");
+  const b = await c.req.json();
+  const { agentId } = b;
+  if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
+  leavePool(contextId, agentId);
+  return c.json({ ok: true, contextId, agentId });
+});
+
+app.post("/api/acp/contexts/:id/speak", async (c) => {
+  const contextId = c.req.param("id");
+  const b = await c.req.json();
+  const { agentId, content, replyTo, tags, metadata } = b;
+  if (!agentId || !content) return c.json({ ok: false, error: "Missing agentId or content" }, 400);
+  const msg = speak(contextId, agentId, content, { replyTo, tags, metadata });
+  if ("error" in msg) return c.json({ ok: false, error: msg.error }, 403);
+  return c.json({ ok: true, contextId, message: msg });
+});
+
+// ACP Agents discovery
+app.get("/api/acp/agents", (c) => {
+  return c.json({ ok: true, agents: listAgents() });
+});
+
+app.get("/api/acp/agents/:agentId", (c) => {
+  const agentId = c.req.param("agentId");
+  const agent = getAgent(agentId);
+  if (!agent) return c.json({ ok: false, error: "Agent not found" }, 404);
+  return c.json({ ok: true, agent });
+});
+
 // ─── Start ─────────────────────────────────────────────────────────────────
 // 各平台入口文件负责启动服务器，这里只导出 app
