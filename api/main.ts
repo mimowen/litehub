@@ -934,6 +934,24 @@ async function handleMcpConfig(req: Request): Promise<Response> {
   });
 }
 
+// GET /.well-known/agent-card.json — A2A Agent Card (Google spec)
+async function handleAgentCard(_req: Request): Promise<Response> {
+  const baseUrl = new URL(_req.url).origin;
+  return json({
+    name: "LiteHub",
+    version: "2.0.0",
+    description: "Distributed Agent Collaboration Hub — Queue + Pool messaging",
+    capabilities: {
+      queue: { produce: `${baseUrl}/api/agent/produce`, consume: `${baseUrl}/api/agent/consume`, peek: `${baseUrl}/api/peek` },
+      pool: { create: `${baseUrl}/api/pool/create`, join: `${baseUrl}/api/pool/join`, speak: `${baseUrl}/api/pool/speak`, messages: `${baseUrl}/api/pool/messages` },
+      a2a: { tasks: `${baseUrl}/api/a2a/tasks`, pushNotificationConfig: `${baseUrl}/api/a2a/tasks/pushNotificationConfig/set` },
+      acp: { runs: `${baseUrl}/api/acp/runs`, contexts: `${baseUrl}/api/acp/contexts` },
+      mcp: { endpoint: `${baseUrl}/api/mcp`, config: `${baseUrl}/api/mcp` },
+    },
+    protocols: ["a2a", "acp", "mcp"],
+  });
+}
+
 // ─── A2A Protocol Handlers (Google Agent-to-Agent) ────────────────────────
 // Maps to existing Queue operations (produce/consume)
 
@@ -1143,6 +1161,7 @@ const PUBLIC_ROUTES: Record<string, Handler> = {
   // ACP read-only (public for polling)
   "acp/agents": handleACPAgents,
   "acp/contexts/messages": handleACPGetMessages,
+  ".well-known/agent-card.json": handleAgentCard,
 };
 
 const AUTH_ROUTES: Record<string, Handler> = {
