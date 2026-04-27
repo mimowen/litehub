@@ -73,6 +73,33 @@ const DDLs = [
     created_at TEXT DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_push_scope ON push_subscriptions(scope, scope_name)`,
+  // A2A tasks table — maps to Queue channel
+  `CREATE TABLE IF NOT EXISTS a2a_tasks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    queue TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_a2a_queue ON a2a_tasks(queue)`,
+  `CREATE INDEX IF NOT EXISTS idx_a2a_agent ON a2a_tasks(agent_id)`,
+  // ACP runs table — maps to Pool channel
+  `CREATE TABLE IF NOT EXISTS acp_runs (
+    id TEXT PRIMARY KEY,
+    context_id TEXT NOT NULL,
+    pool TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'participant',
+    guidelines TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT DEFAULT (datetime('now')),
+    ended_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_acp_context ON acp_runs(context_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_acp_pool ON acp_runs(pool)`,
 ];
 
 async function initDb(client: Client) {

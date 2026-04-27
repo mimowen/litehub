@@ -1167,7 +1167,7 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
       const agentErr = await ensureAgent(db, agentId);
       if (agentErr) return await getJson(agentErr);
       const queueName = `a2a:${targetAgentId || agentId}:${taskId || crypto.randomUUID()}`;
-      await db.execute({ sql: "INSERT OR IGNORE INTO pointers (queue_name, agent_id, status, priority) VALUES (?, ?, 'pending', ?)", args: [queueName, agentId, metadata?.priority ?? 5] });
+      await db.execute({ sql: "INSERT OR IGNORE INTO pointers (queue, agent_id, status, priority) VALUES (?, ?, 'pending', ?)", args: [queueName, agentId, metadata?.priority ?? 5] });
       // Produce into the queue
       const produceReq = new Request(`${new URL(req.url).origin}/api/agent/produce`, {
         method: 'POST',
@@ -1180,11 +1180,11 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
       const { taskId } = args;
       if (!taskId) return { ok: false, error: "Missing taskId" };
       const db = await getDb();
-      const rs = await db.execute({ sql: "SELECT queue_name, agent_id, status, priority, created_at FROM pointers WHERE queue_name LIKE ? ORDER BY created_at DESC LIMIT 1", args: [`a2a:%:${taskId}`] });
+      const rs = await db.execute({ sql: "SELECT queue, agent_id, status, priority, created_at FROM pointers WHERE queue LIKE ? ORDER BY created_at DESC LIMIT 1", args: [`a2a:%:${taskId}`] });
       if (!rs.rows?.length) return { ok: false, error: "Task not found" };
       const pointer = rs.rows[0] as any;
-      const msgRs = await db.execute({ sql: "SELECT payload, created_at FROM pointers WHERE queue_name = ? ORDER BY created_at", args: [pointer.queue_name] });
-      return { taskId, queueName: pointer.queue_name, status: pointer.status, priority: pointer.priority, createdAt: pointer.created_at, messages: msgRs.rows?.map((r: any) => ({ payload: r.payload, createdAt: r.created_at })) ?? [] };
+      const msgRs = await db.execute({ sql: "SELECT data, created_at FROM pointers WHERE queue = ? ORDER BY created_at", args: [pointer.queue] });
+      return { taskId, queueName: pointer.queue, status: pointer.status, priority: pointer.priority, createdAt: pointer.created_at, messages: msgRs.rows?.map((r: any) => ({ data: r.data, createdAt: r.created_at })) ?? [] };
     }
     case "a2a_cancel_task": {
       const { taskId, agentId } = args;
@@ -1192,19 +1192,19 @@ async function executeMcpTool(req: Request, toolName: string, args: any): Promis
       const db = await getDb();
       const agentErr = await ensureAgent(db, agentId);
       if (agentErr) return await getJson(agentErr);
-      const rs = await db.execute({ sql: "UPDATE pointers SET status = 'cancelled' WHERE queue_name LIKE ? AND agent_id = ? AND status = 'pending'", args: [`a2a:%:${taskId}`, agentId] });
+      const rs = await db.execute({ sql: "UPDATE pointers SET status = 'cancelled' WHERE queue LIKE ? AND agent_id = ? AND status = 'pending'", args: [`a2a:%:${taskId}`, agentId] });
       return { ok: true, cancelled: rs.rowsAffected ?? 0 };
     }
     case "a2a_list_tasks": {
       const { agentId, status, limit } = args;
       const db = await getDb();
-      let sql = "SELECT DISTINCT queue_name, agent_id, status, priority, created_at FROM pointers WHERE queue_name LIKE 'a2a:%'";
+      let sql = "SELECT DISTINCT queue, agent_id, status, priority, created_at FROM pointers WHERE queue LIKE 'a2a:%'";
       const a: any[] = [];
       if (agentId) { sql += " AND agent_id = ?"; a.push(agentId); }
       if (status) { sql += " AND status = ?"; a.push(status); }
       sql += " ORDER BY created_at DESC LIMIT ?"; a.push(limit ?? 20);
       const rs = await db.execute({ sql, args: a });
-      return { tasks: rs.rows?.map((r: any) => ({ queueName: r.queue_name, agentId: r.agent_id, status: r.status, priority: r.priority, createdAt: r.created_at, taskId: r.queue_name.split(':')[2] })) ?? [] };
+      return { tasks: rs.rows?.map((r: any) => ({ queueName: r.queue, agentId: r.agent_id, status: r.status, priority: r.priority, createdAt: r.created_at, taskId: r.queue.split(':')[2] })) ?? [] };
     }
     case "a2a_set_push_notification": {
       const { agentId, webhookUrl, event } = args;
@@ -1348,7 +1348,7 @@ async function handleA2ACreateTask(req: Request): Promise<Response> {
     const queueName = `a2a:${targetAgentId || agentId}:${taskId || crypto.randomUUID()}`;
     
     await db.execute({
-      sql: "INSERT OR IGNORE INTO pointers (queue_name, agent_id, status, priority) VALUES (?, ?, 'pending', ?)",
+      sql: "INSERT OR IGNORE INTO pointers (queue, agent_id, status, priority) VALUES (?, ?, 'pending', ?)",
       args: [queueName, agentId, metadata?.priority ?? 5]
     });
     
@@ -1372,7 +1372,7 @@ async function handleA2ACancelTask(req: Request): Promise<Response> {
     if (agentErr) return await getJson(agentErr);
     
     const rs = await db.execute({ 
-      sql: "UPDATE pointers SET status = 'cancelled' WHERE queue_name LIKE ? AND agent_id = ? AND status = 'pending'",
+      sql: "UPDATE pointers SET status = 'cancelled' WHERE queue LIKE ? AND agent_id = ? AND status = 'pending'",
       args: [`a2a:%:${taskId}`, agentId]
     });
     return json({ ok: true, cancelled: rs.rowsAffected ?? rs.rows?.length ?? 0 });
@@ -1455,23 +1455,23 @@ async function handleA2AGetTask(req: Request): Promise<Response> {
     const db = await getDb();
     // Find pointer by queue name pattern a2a:*:*:{taskId}
     const rs = await db.execute({
-      sql: "SELECT queue_name, agent_id, status, priority, created_at FROM pointers WHERE queue_name LIKE ? ORDER BY created_at DESC LIMIT 1",
+      sql: "SELECT queue, agent_id, status, priority, created_at FROM pointers WHERE queue LIKE ? ORDER BY created_at DESC LIMIT 1",
       args: [`a2a:%:${taskId}`]
     });
     if (!rs.rows?.length) return json({ ok: false, error: "Task not found" }, 404);
     const pointer = rs.rows[0] as any;
     // Get all messages in this queue
     const msgRs = await db.execute({
-      sql: "SELECT payload, created_at FROM pointers WHERE queue_name = ? ORDER BY created_at",
-      args: [pointer.queue_name]
+      sql: "SELECT data, created_at FROM pointers WHERE queue = ? ORDER BY created_at",
+      args: [pointer.queue]
     });
     return json({
       taskId,
-      queueName: pointer.queue_name,
+      queueName: pointer.queue,
       status: pointer.status,
       priority: pointer.priority,
       createdAt: pointer.created_at,
-      messages: msgRs.rows?.map((r: any) => ({ payload: r.payload, createdAt: r.created_at })) ?? []
+      messages: msgRs.rows?.map((r: any) => ({ data: r.data, createdAt: r.created_at })) ?? []
     });
   } catch (err) {
     return json({ ok: false, error: err instanceof Error ? err.message : 'Bad request' }, 400);
