@@ -2,7 +2,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
-import { bearerAuth } from "hono/bearer-auth";
 import { handleStreamableHTTP, handleSSE } from "./lib/mcp-handler.js";
 import {
   registerAgent, getAgent, listAgents,
@@ -29,22 +28,41 @@ const EXTRA_TOKENS = (process.env.LITEHUB_TOKENS || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
+// Public paths that don't require auth (webhook receiver, read-only endpoints)
+const PUBLIC_PATHS = new Set([
+  "/api/webhook/test",
+  "/api/agents", "/api/queues", "/api/pools",
+  "/api/peek", "/api/skill", "/api/skills", "/api/dashboard",
+  "/api/mcp",
+  "/api/a2a/tasks", "/api/acp/runs", "/api/acp/contexts", "/api/acp/agents",
+]);
+
 if (TOKEN) {
-  // Single token: use Hono's built-in bearerAuth
-  if (EXTRA_TOKENS.length === 0) {
-    app.use("/api/*", bearerAuth({ token: TOKEN }));
-  } else {
-    // Multiple tokens: custom middleware
-    const validTokens = new Set([TOKEN, ...EXTRA_TOKENS]);
-    app.use("/api/*", async (c, next) => {
-      const header = c.req.header("Authorization") || "";
-      const t = header.startsWith("Bearer ") ? header.slice(7) : "";
-      if (!t || !validTokens.has(t)) {
-        return c.json({ ok: false, error: "Unauthorized" }, 401);
-      }
-      await next();
-    });
-  }
+  const validTokens = EXTRA_TOKENS.length > 0
+    ? new Set([TOKEN, ...EXTRA_TOKENS])
+    : new Set([TOKEN]);
+  app.use("/api/*", async (c, next) => {
+    const path = new URL(c.req.url).pathname;
+    // Public GET endpoints + exact public paths
+    if (c.req.method === "GET" && PUBLIC_PATHS.has(path)) return next();
+    // Public POST for webhook test receiver
+    if (path === "/api/webhook/test") return next();
+    // SSE stream is public
+    if (path.match(/^\/api\/acp\/runs\/[^/]+\/stream$/)) return next();
+    // Public: agent card, single task/run/context GET
+    if (path.match(/^\/api\/a2a\/tasks\/[\w-]+$/) && c.req.method === "GET") return next();
+    if (path.match(/^\/api\/acp\/runs\/[\w-]+$/) && c.req.method === "GET") return next();
+    if (path.match(/^\/api\/acp\/contexts\/[\w-]+$/) && c.req.method === "GET") return next();
+    if (path.match(/^\/api\/acp\/contexts\/[\w-]+\/messages$/) && c.req.method === "GET") return next();
+    if (path.match(/^\/api\/acp\/agents\/.+$/) && c.req.method === "GET") return next();
+    // Everything else requires auth
+    const header = c.req.header("Authorization") || "";
+    const t = header.startsWith("Bearer ") ? header.slice(7) : "";
+    if (!t || !validTokens.has(t)) {
+      return c.json({ ok: false, error: "Unauthorized" }, 401);
+    }
+    await next();
+  });
 }
 
 // ─── Hello Landing Page ────────────────────────────────────────────────────
