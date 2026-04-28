@@ -721,6 +721,19 @@ app.post("/api/a2a/tasks/pushNotificationConfig/set", async (c) => {
   return c.json({ ok: true, message: "Push notification configured (local mode — webhook not persisted)" });
 });
 
+// Webhook test endpoint — receives and logs webhooks for E2E testing
+const webhookLogs: Array<{ receivedAt: string; payload: unknown }> = [];
+app.post("/api/webhook/test", async (c) => {
+  const payload = await c.req.json().catch(() => ({}));
+  webhookLogs.push({ receivedAt: new Date().toISOString(), payload });
+  // Keep last 100 logs
+  if (webhookLogs.length > 100) webhookLogs.shift();
+  return c.json({ ok: true, received: true });
+});
+app.get("/api/webhook/test", (c) => {
+  return c.json({ ok: true, logs: webhookLogs.slice(-20) });
+});
+
 // ─── ACP Protocol Routes (Agent Communication Protocol) ───────────────
 
 // ACP Runs

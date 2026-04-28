@@ -49,6 +49,7 @@ const ROUTE_ENTRIES: RouteEntry[] = [
   { pattern: "a2a/tasks",           handler: handleA2ATasks,         auth: false  },
   { pattern: "a2a/tasks/cancel",    handler: handleA2ACancelTask,    auth: true  },
   { pattern: "a2a/tasks/pushNotificationConfig/set", handler: handleA2ASetPushNotification, auth: true },
+  { pattern: "webhook/test",          handler: handleWebhookTest,         auth: false },
   // ACP
   { pattern: "acp/runs/{id}/stream", handler: handleACPRunStream,     auth: false },
   { pattern: "acp/runs/{id}",       handler: handleACPGetRun,        auth: false },
@@ -1633,6 +1634,23 @@ async function handleA2ASetPushNotification(req: Request): Promise<Response> {
   }
 }
 
+// Webhook test receiver — stores received webhooks for E2E testing
+const webhookTestLogs: Array<{ receivedAt: string; payload: unknown }> = [];
+async function handleWebhookTest(req: Request): Promise<Response> {
+  if (req.method === 'POST') {
+    try {
+      const payload = await req.json();
+      webhookTestLogs.push({ receivedAt: new Date().toISOString(), payload });
+      if (webhookTestLogs.length > 100) webhookTestLogs.shift();
+      return json({ ok: true, received: true });
+    } catch {
+      return json({ ok: false, error: 'Invalid JSON payload' }, 400);
+    }
+  }
+  // GET — return recent logs
+  return json({ ok: true, logs: webhookTestLogs.slice(-20) });
+}
+
 // ─── ACP Protocol Handlers (Agent Communication Protocol) ─────────────────
 // Maps to existing Pool operations
 
@@ -2078,6 +2096,7 @@ const PUBLIC_ROUTES: Record<string, Handler> = {
   "a2a/tasks": handleA2ATasks,
   "a2a/tasks/cancel": handleA2ACancelTask,
   "a2a/tasks/pushNotificationConfig/set": handleA2ASetPushNotification,
+  "webhook/test": handleWebhookTest,
   // ACP Protocol (Agent Communication Protocol)
   "acp/runs": handleACPRuns,
   "acp/runs/cancel": handleACPCancelRun,
