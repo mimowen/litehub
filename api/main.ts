@@ -50,6 +50,7 @@ const ROUTE_ENTRIES: RouteEntry[] = [
   { pattern: "a2a/tasks/cancel",    handler: handleA2ACancelTask,    auth: true  },
   { pattern: "a2a/tasks/pushNotificationConfig/set", handler: handleA2ASetPushNotification, auth: true },
   // ACP
+  { pattern: "acp/runs/{id}/stream", handler: handleACPRunStream,     auth: false },
   { pattern: "acp/runs/{id}",       handler: handleACPGetRun,        auth: false },
   { pattern: "acp/contexts/{id}/messages", handler: handleACPGetContextMessages, auth: false },
   { pattern: "acp/contexts/{id}/join",  handler: handleACPJoinContext,  auth: true },
@@ -472,6 +473,9 @@ async function handleDashboard(_req: Request): Promise<Response> {
     pre { background: #0f172a; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; }
     .token-input { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
     .token-input input { flex: 1; margin-bottom: 0; }
+    .tab-bar { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
+    .tab { padding: 0.5rem 1rem; border-radius: 6px 6px 0 0; cursor: pointer; background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-bottom: none; }
+    .tab.active { background: #334155; color: #4ade80; }
   </style>
 </head>
 <body>
@@ -485,23 +489,51 @@ async function handleDashboard(_req: Request): Promise<Response> {
     </div>
 
     <div class="grid">
-      <div class="card"><h2>Agents</h2><div id="agents">Loading...</div></div>
-      <div class="card"><h2>Queues</h2><div id="queues">Loading...</div></div>
-      <div class="card"><h2>Pools</h2><div id="pools">Loading...</div></div>
+      <div class="card"><h2>🤖 Agents</h2><div id="agents">Loading...</div></div>
+      <div class="card"><h2>📨 Queues</h2><div id="queues">Loading...</div></div>
+      <div class="card"><h2>🏊 Pools</h2><div id="pools">Loading...</div></div>
+    </div>
+
+    <div class="grid">
+      <div class="card"><h2>📋 A2A Tasks</h2><div id="a2a-tasks">Loading...</div></div>
+      <div class="card"><h2>⚡ ACP Runs</h2><div id="acp-runs">Loading...</div></div>
+      <div class="card"><h2>🔍 ACP Agents</h2><div id="acp-agents">Loading...</div></div>
     </div>
 
     <div class="section">
-      <h3>Quick Test</h3>
+      <h3>Quick Test — Queue</h3>
       <input type="text" id="testQueue" placeholder="Queue name" value="test">
       <textarea id="testData" placeholder="Data to produce" rows="3">Hello from LiteHub!</textarea>
       <button onclick="produce()">Produce</button>
       <pre id="result"></pre>
+    </div>
+
+    <div class="section">
+      <h3>Quick Test — A2A Task</h3>
+      <input type="text" id="taskName" placeholder="Task name" value="test-task">
+      <input type="text" id="taskDesc" placeholder="Task description" value="A test task">
+      <input type="text" id="taskQueue" placeholder="Queue (optional)" value="">
+      <button onclick="createTask()">Create Task</button>
+      <pre id="task-result"></pre>
+    </div>
+
+    <div class="section">
+      <h3>Quick Test — ACP Run</h3>
+      <input type="text" id="runName" placeholder="Run name" value="test-run">
+      <input type="text" id="runAgent" placeholder="Agent ID" value="dashboard-agent">
+      <button onclick="createRun()">Create Run</button>
+      <button onclick="speakRun()" style="background:#3b82f6;margin-left:0.5rem">Speak to Run</button>
+      <input type="text" id="runMsg" placeholder="Message" value="Hello from run!" style="margin-top:0.5rem">
+      <div id="sse-status" style="color:#94a3b8;font-size:0.8rem;margin-top:0.5rem"></div>
+      <pre id="run-result"></pre>
     </div>
   </div>
 
   <script>
     const token = localStorage.getItem('litehub_token') || '';
     document.getElementById('token').value = token;
+    let currentRunId = null;
+    let eventSource = null;
 
     function saveToken() {
       localStorage.setItem('litehub_token', document.getElementById('token').value);
@@ -517,14 +549,20 @@ async function handleDashboard(_req: Request): Promise<Response> {
 
     async function loadData() {
       try {
-        const [agents, queues, pools] = await Promise.all([
-          fetch('/api/agents', { headers: headers() }).then(r => r.json()),
-          fetch('/api/queues', { headers: headers() }).then(r => r.json()),
-          fetch('/api/pools', { headers: headers() }).then(r => r.json())
+        const [agents, queues, pools, a2aTasks, acpRuns, acpAgents] = await Promise.all([
+          fetch('/api/agents', { headers: headers() }).then(r => r.json()).catch(() => ({})),
+          fetch('/api/queues', { headers: headers() }).then(r => r.json()).catch(() => ({})),
+          fetch('/api/pools', { headers: headers() }).then(r => r.json()).catch(() => ({})),
+          fetch('/api/a2a/tasks', { headers: headers() }).then(r => r.json()).catch(() => ({})),
+          fetch('/api/acp/runs', { headers: headers() }).then(r => r.json()).catch(() => ({})),
+          fetch('/api/acp/agents', { headers: headers() }).then(r => r.json()).catch(() => ({}))
         ]);
-        document.getElementById('agents').innerHTML = agents.agents?.map(a => '<div>' + a.name + ' (' + a.role + ')</div>').join('') || 'No agents';
-        document.getElementById('queues').innerHTML = queues.queues?.map(q => '<div>' + q.name + '</div>').join('') || 'No queues';
-        document.getElementById('pools').innerHTML = pools.pools?.map(p => '<div>' + p.name + ' (' + p.memberCount + '/' + p.maxMembers + ')</div>').join('') || 'No pools';
+        document.getElementById('agents').innerHTML = agents.agents?.map(a => '<div>' + a.name + ' <span style="color:#94a3b8">(' + a.role + ')</span></div>').join('') || '<div style="color:#64748b">No agents</div>';
+        document.getElementById('queues').innerHTML = queues.queues?.map(q => '<div>' + q.name + ' <span style="color:#64748b">(' + q.size + ' msgs)</span></div>').join('') || '<div style="color:#64748b">No queues</div>';
+        document.getElementById('pools').innerHTML = pools.pools?.map(p => '<div>' + p.name + ' <span style="color:#64748b">(' + p.memberCount + '/' + p.maxMembers + ')</span></div>').join('') || '<div style="color:#64748b">No pools</div>';
+        document.getElementById('a2a-tasks').innerHTML = a2aTasks.tasks?.map(t => '<div>' + t.name + ' <span style="color:#f59e0b">[' + t.status + ']</span></div>').join('') || '<div style="color:#64748b">No tasks</div>';
+        document.getElementById('acp-runs').innerHTML = acpRuns.runs?.map(r => '<div>' + r.name + ' <span style="color:#3b82f6">[' + r.status + ']</span></div>').join('') || '<div style="color:#64748b">No runs</div>';
+        document.getElementById('acp-agents').innerHTML = acpAgents.agents?.map(a => '<div>' + a.agentId + '</div>').join('') || '<div style="color:#64748b">No ACP agents</div>';
       } catch (e) { console.error(e); }
     }
 
@@ -535,9 +573,72 @@ async function handleDashboard(_req: Request): Promise<Response> {
         method: 'POST', headers: headers(),
         body: JSON.stringify({ queue, agentId: 'dashboard', data })
       });
-      const json = await res.json();
-      document.getElementById('result').textContent = JSON.stringify(json, null, 2);
+      const j = await res.json();
+      document.getElementById('result').textContent = JSON.stringify(j, null, 2);
       loadData();
+    }
+
+    async function createTask() {
+      const name = document.getElementById('taskName').value;
+      const description = document.getElementById('taskDesc').value;
+      const queue = document.getElementById('taskQueue').value || undefined;
+      const res = await fetch('/api/a2a/tasks', {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ name, description, queue })
+      });
+      const j = await res.json();
+      document.getElementById('task-result').textContent = JSON.stringify(j, null, 2);
+      loadData();
+    }
+
+    async function createRun() {
+      const name = document.getElementById('runName').value;
+      const agentId = document.getElementById('runAgent').value;
+      const res = await fetch('/api/acp/runs', {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ name, agentId })
+      });
+      const j = await res.json();
+      document.getElementById('run-result').textContent = JSON.stringify(j, null, 2);
+      if (j.ok && j.run?.id) {
+        currentRunId = j.run.id;
+        startSSE(j.run.id);
+      }
+      loadData();
+    }
+
+    async function speakRun() {
+      if (!currentRunId) { alert('Create a run first'); return; }
+      const agentId = document.getElementById('runAgent').value;
+      const content = document.getElementById('runMsg').value;
+      const res = await fetch('/api/acp/contexts/' + currentRunId + '/speak', {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ agentId, content })
+      });
+      const j = await res.json();
+      document.getElementById('run-result').textContent = JSON.stringify(j, null, 2);
+    }
+
+    function startSSE(runId) {
+      if (eventSource) eventSource.close();
+      const sseStatus = document.getElementById('sse-status');
+      sseStatus.textContent = 'SSE: Connecting to run ' + runId + '...';
+      eventSource = new EventSource('/api/acp/runs/' + runId + '/stream');
+      eventSource.addEventListener('init', (e) => {
+        const data = JSON.parse(e.data);
+        sseStatus.textContent = 'SSE: Connected — ' + data.messageCount + ' messages';
+      });
+      eventSource.addEventListener('messages', (e) => {
+        const data = JSON.parse(e.data);
+        sseStatus.textContent = 'SSE: ' + data.newMessages.length + ' new message(s) received';
+      });
+      eventSource.addEventListener('close', () => {
+        sseStatus.textContent = 'SSE: Stream closed';
+        eventSource.close();
+      });
+      eventSource.onerror = () => {
+        sseStatus.textContent = 'SSE: Connection error';
+      };
     }
 
     loadData();
@@ -1621,10 +1722,8 @@ async function handleACPCancelRun(req: Request): Promise<Response> {
 // GET /api/a2a/tasks/{id} — Get A2A task by ID
 async function handleA2AGetTask(req: Request): Promise<Response> {
   try {
-    const url = new URL(req.url);
-    const pathParts = url.pathname.replace(/^\/api\//, '').split('/');
-    // pathParts: ["a2a","tasks","{id}"]
-    const taskId = pathParts[2];
+    const params = (req as any)._params as Record<string, string> | undefined;
+    const taskId = params?.id;
     if (!taskId) return json({ ok: false, error: "Missing taskId" }, 400);
 
     const db = await getDb();
@@ -1655,12 +1754,99 @@ async function handleA2AGetTask(req: Request): Promise<Response> {
   }
 }
 
+// GET /api/acp/runs/{id}/stream — SSE stream for ACP run updates
+// Vercel Edge Runtime compatible: polling-based SSE with periodic DB checks
+async function handleACPRunStream(req: Request): Promise<Response> {
+  const params = (req as any)._params as Record<string, string> | undefined;
+  const runId = params?.id;
+  if (!runId) return json({ ok: false, error: 'Missing runId' }, 400);
+
+  // Verify the run exists
+  const db = await getDb();
+  const poolRs = await db.execute({ sql: "SELECT name FROM pools WHERE name = ?", args: [`acp:${runId}`] });
+  if (!poolRs.rows.length) return json({ ok: false, error: 'Run not found' }, 404);
+
+  const encoder = new TextEncoder();
+  let lastMsgCount = 0;
+  let closed = false;
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      // Send initial event with current state
+      const initRs = await db.execute({
+        sql: "SELECT agent_id, content, created_at FROM pool_messages WHERE pool = ? ORDER BY created_at ASC LIMIT 100",
+        args: [`acp:${runId}`],
+      });
+      lastMsgCount = initRs.rows.length;
+
+      const initData = {
+        type: 'init',
+        runId,
+        messageCount: lastMsgCount,
+        messages: initRs.rows.map((r: any) => ({ agentId: r.agent_id, content: r.content, createdAt: r.created_at })),
+      };
+      controller.enqueue(encoder.encode(`event: init\ndata: ${JSON.stringify(initData)}\n\n`));
+
+      // Polling loop — check for new messages every 2 seconds
+      const pollInterval = setInterval(async () => {
+        if (closed) { clearInterval(pollInterval); return; }
+        try {
+          const rs = await db.execute({
+            sql: "SELECT agent_id, content, created_at FROM pool_messages WHERE pool = ? ORDER BY created_at ASC LIMIT 100",
+            args: [`acp:${runId}`],
+          });
+          const currentCount = rs.rows.length;
+          if (currentCount > lastMsgCount) {
+            // Send only new messages
+            const newMessages = rs.rows.slice(lastMsgCount).map((r: any) => ({
+              agentId: r.agent_id, content: r.content, createdAt: r.created_at,
+            }));
+            const eventData = { type: 'messages', runId, newMessages };
+            controller.enqueue(encoder.encode(`event: messages\ndata: ${JSON.stringify(eventData)}\n\n`));
+            lastMsgCount = currentCount;
+          }
+          // Heartbeat to keep connection alive
+          controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
+        } catch {
+          // DB error — skip this tick
+        }
+      }, 2000);
+
+      // Cleanup on client disconnect
+      req.signal.addEventListener('abort', () => {
+        closed = true;
+        clearInterval(pollInterval);
+        try { controller.close(); } catch {}
+      });
+
+      // Auto-close after 5 minutes to prevent resource exhaustion
+      setTimeout(() => {
+        closed = true;
+        clearInterval(pollInterval);
+        try {
+          controller.enqueue(encoder.encode(`event: close\ndata: {"type":"timeout","message":"Stream closed after 5 minutes"}\n\n`));
+          controller.close();
+        } catch {}
+      }, 5 * 60 * 1000);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'X-Accel-Buffering': 'no',
+    },
+  });
+}
+
 // GET /api/acp/runs/{id} — Get ACP run by ID
 async function handleACPGetRun(req: Request): Promise<Response> {
   try {
-    const url = new URL(req.url);
-    const pathParts = url.pathname.replace(/^\/api\//, '').split('/');
-    const runId = pathParts[2];
+    const params = (req as any)._params as Record<string, string> | undefined;
+    const runId = params?.id;
     if (!runId) return json({ ok: false, error: "Missing runId" }, 400);
 
     const db = await getDb();
@@ -1693,9 +1879,8 @@ async function handleACPGetRun(req: Request): Promise<Response> {
 // GET /api/acp/contexts/{id} — Get ACP context (Pool) by ID
 async function handleACPGetContext(req: Request): Promise<Response> {
   try {
-    const url = new URL(req.url);
-    const pathParts = url.pathname.replace(/^\/api\//, '').split('/');
-    const contextId = pathParts[2];
+    const params = (req as any)._params as Record<string, string> | undefined;
+    const contextId = params?.id;
     if (!contextId) return json({ ok: false, error: "Missing contextId" }, 400);
 
     const db = await getDb();
@@ -1727,10 +1912,8 @@ async function handleACPGetContext(req: Request): Promise<Response> {
 // GET /api/acp/contexts/{id}/messages — Get messages in an ACP context
 async function handleACPGetContextMessages(req: Request): Promise<Response> {
   try {
-    const url = new URL(req.url);
-    const pathParts = url.pathname.replace(/^\/api\//, '').split('/');
-    // pathParts: ["acp","contexts","{id}","messages"]
-    const contextId = pathParts[2];
+    const params = (req as any)._params as Record<string, string> | undefined;
+    const contextId = params?.id;
     if (!contextId) return json({ ok: false, error: "Missing contextId" }, 400);
 
     const db = await getDb();

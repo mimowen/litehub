@@ -1,5 +1,6 @@
 // src/adapters/cf-workers.ts — Cloudflare Workers 部署适配器
 // 用 D1 替代 better-sqlite3（CF Workers 没有 Node.js 文件系统）
+/// <reference types="@cloudflare/workers-types" />
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
