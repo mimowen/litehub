@@ -209,6 +209,9 @@ app.get("/api/dashboard", (c) => {
     pre { background: #0f172a; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; }
     .token-input { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
     .token-input input { flex: 1; margin-bottom: 0; }
+    .tab-bar { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
+    .tab { padding: 0.5rem 1rem; border-radius: 6px 6px 0 0; cursor: pointer; background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-bottom: none; }
+    .tab.active { background: #334155; color: #4ade80; }
   </style>
 </head>
 <body>
@@ -222,32 +225,51 @@ app.get("/api/dashboard", (c) => {
     </div>
 
     <div class="grid">
-      <div class="card">
-        <h2>Agents</h2>
-        <div id="agents">Loading...</div>
-      </div>
-      <div class="card">
-        <h2>Queues</h2>
-        <div id="queues">Loading...</div>
-      </div>
-      <div class="card">
-        <h2>Pools</h2>
-        <div id="pools">Loading...</div>
-      </div>
+      <div class="card"><h2>🤖 Agents</h2><div id="agents">Loading...</div></div>
+      <div class="card"><h2>📨 Queues</h2><div id="queues">Loading...</div></div>
+      <div class="card"><h2>🏊 Pools</h2><div id="pools">Loading...</div></div>
+    </div>
+
+    <div class="grid">
+      <div class="card"><h2>📋 A2A Tasks</h2><div id="a2a-tasks">Loading...</div></div>
+      <div class="card"><h2>⚡ ACP Runs</h2><div id="acp-runs">Loading...</div></div>
+      <div class="card"><h2>🔍 ACP Agents</h2><div id="acp-agents">Loading...</div></div>
     </div>
 
     <div class="section">
-      <h3>Quick Test</h3>
+      <h3>Quick Test — Queue</h3>
       <input type="text" id="testQueue" placeholder="Queue name" value="test">
       <textarea id="testData" placeholder="Data to produce" rows="3">Hello from LiteHub!</textarea>
       <button onclick="produce()">Produce</button>
       <pre id="result"></pre>
+    </div>
+
+    <div class="section">
+      <h3>Quick Test — A2A Task</h3>
+      <input type="text" id="taskName" placeholder="Task name" value="test-task">
+      <input type="text" id="taskDesc" placeholder="Task description" value="A test task">
+      <input type="text" id="taskQueue" placeholder="Queue (optional)" value="">
+      <button onclick="createTask()">Create Task</button>
+      <pre id="task-result"></pre>
+    </div>
+
+    <div class="section">
+      <h3>Quick Test — ACP Run</h3>
+      <input type="text" id="runName" placeholder="Run name" value="test-run">
+      <input type="text" id="runAgent" placeholder="Agent ID" value="dashboard-agent">
+      <button onclick="createRun()">Create Run</button>
+      <button onclick="speakRun()" style="background:#3b82f6;margin-left:0.5rem">Speak to Run</button>
+      <input type="text" id="runMsg" placeholder="Message" value="Hello from run!" style="margin-top:0.5rem">
+      <div id="sse-status" style="color:#94a3b8;font-size:0.8rem;margin-top:0.5rem"></div>
+      <pre id="run-result"></pre>
     </div>
   </div>
 
   <script>
     const token = localStorage.getItem('litehub_token') || '';
     document.getElementById('token').value = token;
+    let currentRunId = null;
+    let eventSource = null;
 
     function saveToken() {
       localStorage.setItem('litehub_token', document.getElementById('token').value);
@@ -263,30 +285,93 @@ app.get("/api/dashboard", (c) => {
 
     async function loadData() {
       try {
-        const [agents, queues, pools] = await Promise.all([
-          fetch('/api/agents', { headers: headers() }).then(r => r.json()),
-          fetch('/api/queues', { headers: headers() }).then(r => r.json()),
-          fetch('/api/pools', { headers: headers() }).then(r => r.json())
+        const [agents, queues, pools, a2aTasks, acpRuns, acpAgents] = await Promise.all([
+          fetch('/api/agents', { headers: headers() }).then(r => r.json()).catch(() => ({})),
+          fetch('/api/queues', { headers: headers() }).then(r => r.json()).catch(() => ({})),
+          fetch('/api/pools', { headers: headers() }).then(r => r.json()).catch(() => ({}))
         ]);
-        document.getElementById('agents').innerHTML = agents.agents?.map(a => '<div>' + a.name + ' (' + a.role + ')</div>').join('') || 'No agents';
-        document.getElementById('queues').innerHTML = queues.queues?.map(q => '<div>' + q.name + '</div>').join('') || 'No queues';
-        document.getElementById('pools').innerHTML = pools.pools?.map(p => '<div>' + p.name + ' (' + p.memberCount + '/' + p.maxMembers + ')</div>').join('') || 'No pools';
-      } catch (e) {
-        console.error(e);
-      }
+        document.getElementById('agents').innerHTML = agents.agents?.map(a => '<div>' + a.name + ' <span style="color:#94a3b8">(' + a.role + ')</span></div>').join('') || '<div style="color:#64748b">No agents</div>';
+        document.getElementById('queues').innerHTML = queues.queues?.map(q => '<div>' + q.name + ' <span style="color:#64748b">(' + q.size + ' msgs)</span></div>').join('') || '<div style="color:#64748b">No queues</div>';
+        document.getElementById('pools').innerHTML = pools.pools?.map(p => '<div>' + p.name + ' <span style="color:#64748b">(' + p.memberCount + '/' + p.maxMembers + ')</span></div>').join('') || '<div style="color:#64748b">No pools</div>';
+        document.getElementById('a2a-tasks').innerHTML = a2aTasks.tasks?.map(t => '<div>' + t.name + ' <span style="color:#f59e0b">[' + t.status + ']</span></div>').join('') || '<div style="color:#64748b">No tasks</div>';
+        document.getElementById('acp-runs').innerHTML = acpRuns.runs?.map(r => '<div>' + r.name + ' <span style="color:#3b82f6">[' + r.status + ']</span></div>').join('') || '<div style="color:#64748b">No runs</div>';
+        document.getElementById('acp-agents').innerHTML = acpAgents.agents?.map(a => '<div>' + a.agentId + '</div>').join('') || '<div style="color:#64748b">No ACP agents</div>';
+      } catch (e) { console.error(e); }
     }
 
     async function produce() {
       const queue = document.getElementById('testQueue').value;
       const data = document.getElementById('testData').value;
       const res = await fetch('/api/agent/produce', {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({ queue, producerId: 'dashboard', data })
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ queue, agentId: 'dashboard', data })
       });
-      const json = await res.json();
-      document.getElementById('result').textContent = JSON.stringify(json, null, 2);
+      const j = await res.json();
+      document.getElementById('result').textContent = JSON.stringify(j, null, 2);
       loadData();
+    }
+
+    async function createTask() {
+      const name = document.getElementById('taskName').value;
+      const description = document.getElementById('taskDesc').value;
+      const queue = document.getElementById('taskQueue').value || undefined;
+      const res = await fetch('/api/a2a/tasks', {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ name, description, queue })
+      });
+      const j = await res.json();
+      document.getElementById('task-result').textContent = JSON.stringify(j, null, 2);
+      loadData();
+    }
+
+    async function createRun() {
+      const name = document.getElementById('runName').value;
+      const agentId = document.getElementById('runAgent').value;
+      const res = await fetch('/api/acp/runs', {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ name, agentId })
+      });
+      const j = await res.json();
+      document.getElementById('run-result').textContent = JSON.stringify(j, null, 2);
+      if (j.ok && j.run?.id) {
+        currentRunId = j.run.id;
+        startSSE(j.run.id);
+      }
+      loadData();
+    }
+
+    async function speakRun() {
+      if (!currentRunId) { alert('Create a run first'); return; }
+      const agentId = document.getElementById('runAgent').value;
+      const content = document.getElementById('runMsg').value;
+      const res = await fetch('/api/acp/contexts/' + currentRunId + '/speak', {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ agentId, content })
+      });
+      const j = await res.json();
+      document.getElementById('run-result').textContent = JSON.stringify(j, null, 2);
+    }
+
+    function startSSE(runId) {
+      if (eventSource) eventSource.close();
+      const sseStatus = document.getElementById('sse-status');
+      sseStatus.textContent = 'SSE: Connecting to run ' + runId + '...';
+      eventSource = new EventSource('/api/acp/runs/' + runId + '/stream');
+      eventSource.addEventListener('init', (e) => {
+        const data = JSON.parse(e.data);
+        sseStatus.textContent = 'SSE: Connected — ' + data.messageCount + ' messages';
+      });
+      eventSource.addEventListener('messages', (e) => {
+        const data = JSON.parse(e.data);
+        sseStatus.textContent = 'SSE: ' + data.newMessages.length + ' new message(s) received';
+      });
+      eventSource.addEventListener('close', () => {
+        sseStatus.textContent = 'SSE: Stream closed';
+        eventSource.close();
+      });
+      eventSource.onerror = () => {
+        sseStatus.textContent = 'SSE: Connection error';
+      };
     }
 
     loadData();
@@ -654,6 +739,65 @@ app.post("/api/acp/runs", async (c) => {
   const poolName = `acp:${runId || crypto.randomUUID()}`;
   const pool = createPool(poolName, name || poolName);
   return c.json({ ok: true, runId: poolName.replace('acp:', ''), pool });
+});
+
+// ACP Run SSE stream
+app.get("/api/acp/runs/:id/stream", async (c) => {
+  const runId = c.req.param("id");
+  const pool = getPool(`acp:${runId}`);
+  if (!pool) return c.json({ ok: false, error: "Run not found" }, 404);
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+      let lastCount = 0;
+      let closed = false;
+
+      // Initial snapshot
+      const { messages: msgs } = getMessages(`acp:${runId}`, { limit: 100 });
+      lastCount = msgs.length;
+      const initData = { type: 'init', runId, messageCount: lastCount, messages: msgs };
+      controller.enqueue(encoder.encode(`event: init\ndata: ${JSON.stringify(initData)}\n\n`));
+
+      // Poll every 2s
+      const interval = setInterval(() => {
+        if (closed) { clearInterval(interval); return; }
+        const { messages: current } = getMessages(`acp:${runId}`, { limit: 100 });
+        if (current.length > lastCount) {
+          const newMsgs = current.slice(lastCount);
+          controller.enqueue(encoder.encode(`event: messages\ndata: ${JSON.stringify({ type: 'messages', runId, newMessages: newMsgs })}\n\n`));
+          lastCount = current.length;
+        }
+        controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
+      }, 2000);
+
+      // Cleanup
+      c.req.raw.signal.addEventListener('abort', () => {
+        closed = true;
+        clearInterval(interval);
+        try { controller.close(); } catch {}
+      });
+
+      // Auto-close after 5 min
+      setTimeout(() => {
+        closed = true;
+        clearInterval(interval);
+        try {
+          controller.enqueue(encoder.encode(`event: close\ndata: {"type":"timeout"}\n\n`));
+          controller.close();
+        } catch {}
+      }, 5 * 60 * 1000);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  });
 });
 
 app.get("/api/acp/runs/:id", (c) => {
