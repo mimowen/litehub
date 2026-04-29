@@ -143,14 +143,23 @@ export async function getDb(): Promise<Client> {
 export function validateAuth(req: Request): boolean {
   const token = process.env.LITEHUB_TOKEN;
   const tokens = process.env.LITEHUB_TOKENS;
-  if (!token && !tokens) return true; // Open mode
+  if (!token && !tokens) {
+    return true; // Open mode
+  }
   const authHeader = req.headers.get("Authorization") || "";
   const bearerToken = authHeader.replace(/^Bearer\s+/i, "");
-  if (token && bearerToken === token) return true;
+  if (token && bearerToken === token) {
+    return true;
+  }
   if (tokens) {
     const allowed = tokens.split(",").map(t => t.trim());
-    if (allowed.includes(bearerToken)) return true;
+    console.error(`[validateAuth] Checking against ${allowed.length} tokens`);
+    if (allowed.includes(bearerToken)) {
+      console.error('[validateAuth] Token found in LITEHUB_TOKENS, allowing');
+      return true;
+    }
   }
+  console.error('[validateAuth] No match, denying request');
   return false;
 }
 

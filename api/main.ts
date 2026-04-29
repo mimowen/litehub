@@ -1620,7 +1620,7 @@ async function handleA2ASetPushNotification(req: Request): Promise<Response> {
     const { agentId, taskId, webhookUrl, secret } = body as { agentId: string; taskId: string; webhookUrl: string; secret?: string };
     const db = await getDb();
     const agentErr = await ensureAgent(db, agentId);
-    if (agentErr) return await getJson(agentErr);
+    if (agentErr) return agentErr; // agentErr is already a Response
     
     // Store push subscription in push_subscriptions table
     await db.execute({
