@@ -3,7 +3,7 @@
 // 使用 Web Crypto API 替代 uuid 包，兼容 Edge Runtime
 import type { DbClient } from "../adapters/db/interface.js";
 import { getOne } from "../adapters/db/interface.js";
-import { ensureAgent, produce } from "./queue.js";
+import { ensureAgent, produce, ensureQueue } from "./queue.js";
 import { notifySubscribers, setPushSubscription, getPushSubscriptions } from "./webhook.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -52,7 +52,9 @@ export async function createTask(
     [realTaskId, name ?? "", JSON.stringify(input ?? {}), queueName, agentId],
   );
 
-  // Produce the task message into the queue
+  // Ensure the queue exists before producing
+  await ensureQueue(db, queueName, `A2A task: ${name || realTaskId}`, agentId);
+
   const pointer = await produce(db, queueName, JSON.stringify({ taskId: realTaskId, name, input, messageId, metadata }), agentId);
 
   return { ok: true, taskId: realTaskId, id: pointer?.id, queue: queueName };

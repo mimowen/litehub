@@ -69,15 +69,19 @@ test_endpoint "GET" "/api/mcp" "MCP 配置" 200
 
 echo ""
 echo "--- 3. Agent 操作 ---"
-test_endpoint "POST" "/api/agent/register" "注册 agent" 200 \
+test_endpoint "POST" "/api/agent/register" "注册 producer agent" 200 \
     '{"agentId":"test-agent-001","name":"Test Agent","role":"producer","queues":["test-queue"]}'
+test_endpoint "POST" "/api/agent/register" "注册 consumer agent" 200 \
+    '{"agentId":"test-agent-002","name":"Test Consumer","role":"consumer","queues":[]}'
 test_endpoint "POST" "/api/agent/produce" "生产消息" 200 \
     '{"agentId":"test-agent-001","queue":"test-queue","data":"test data"}'
+test_endpoint "GET" "/api/peek?queue=test-queue" "窥视队列" 200
 test_endpoint "POST" "/api/agent/consume" "消费消息" 200 \
     '{"agentId":"test-agent-002","queue":"test-queue"}'
+test_endpoint "POST" "/api/agent/produce" "生产管道源数据" 200 \
+    '{"agentId":"test-agent-001","queue":"test-queue","data":"pipe source data"}'
 test_endpoint "POST" "/api/agent/pipe" "管道传递" 200 \
     '{"agentId":"test-agent-001","sourceQueue":"test-queue","targetQueue":"test-queue-2","data":"piped data"}'
-test_endpoint "GET" "/api/peek?queue=test-queue" "窥视队列" 200
 
 echo ""
 echo "--- 4. Pool 操作 ---"

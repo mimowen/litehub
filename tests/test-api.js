@@ -1,7 +1,7 @@
 // 测试脚本 - 验证LiteHub API功能
 import fetch from 'node-fetch';
 
-const API_URL = 'https://litehub-khj8o073s-wens-projects-0631aaf3.vercel.app/api';
+const API_URL = (process.env.LITEHUB_URL || process.argv[2] || 'http://localhost:3000') + '/api';
 
 async function testAPI() {
   console.log('=== 测试 LiteHub API ===\n');

@@ -648,7 +648,7 @@ app.post("/api/agent/pipe", async (c) => {
     if (!(await queueExists(db, sourceQueue))) {
       return c.json({ ok: false, error: "Source queue not found." }, 404);
     }
-    const consumed = await consume(db, sourceQueue, agentId, 1);
+    const consumed = await consume(db, sourceQueue, agentId, 1, { loopDetection: false });
     if (!consumed || consumed.length === 0) {
       return c.json({ ok: false, error: "源队列无数据" }, 404);
     }

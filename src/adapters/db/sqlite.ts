@@ -59,16 +59,21 @@ export function getRawDbInstance(): Database.Database {
  */
 export function resetDb(): void {
   if (_db) {
-    // Drop all tables for clean state
     try {
-      const tables = _db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
-      for (const t of tables) {
-        _db.exec(`DROP TABLE IF EXISTS "${t.name}"`);
-      }
-      _db.close();
+      _db.exec("DELETE FROM pool_messages");
+      _db.exec("DELETE FROM pool_members");
+      _db.exec("DELETE FROM acp_runs");
+      _db.exec("DELETE FROM a2a_tasks");
+      _db.exec("DELETE FROM push_subscriptions");
+      _db.exec("DELETE FROM webhook_logs");
+      _db.exec("DELETE FROM pointers");
+      _db.exec("DELETE FROM pools");
+      _db.exec("DELETE FROM queues");
+      _db.exec("DELETE FROM agents");
     } catch {
+      // fallback: close and reopen
       _db.close();
+      _db = null;
     }
-    _db = null;
   }
 }

@@ -17,3 +17,6 @@ temp/
 *.swo
 *~
 .vite/
+litehub.db
+litehub.db-*
+.trae/
