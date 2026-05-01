@@ -28,7 +28,12 @@ import {
 } from "./core/acp.js";
 import { logWebhook, getWebhookLogs } from "./core/webhook.js";
 
-// ─── MCP handler (lazy-loaded for Edge Runtime compatibility) ──────────
+// ─── Utility: get base URL ───────────────────────────────────────────────
+function getBaseUrl(c: any): string {
+  const host = c.req.header("host") || "localhost:3000";
+  const proto = c.req.header("x-forwarded-proto") || "http";
+  return `${proto}://${host}`;
+}
 
 // ─── App setup ───────────────────────────────────────────────────────────
 const app = new Hono<LiteHubEnv>();
@@ -82,14 +87,14 @@ if (TOKEN) {
     ? new Set([TOKEN, ...EXTRA_TOKENS])
     : new Set([TOKEN]);
   app.use("/api/*", async (c, next) => {
-    const path = new URL(c.req.url).pathname;
+    const fullUrl = new URL(c.req.url, getBaseUrl(c));
+    const path = fullUrl.pathname;
     if (c.req.method === "GET" && PUBLIC_PATHS.has(path)) return next();
     if (path === "/api/webhook/test") return next();
     if (path.match(/^\/api\/acp\/runs\/[^/]+\/stream$/)) return next();
     if (path.match(/^\/api\/a2a\/tasks\/[\w-]+$/) && c.req.method === "GET") return next();
     if (path.match(/^\/api\/acp\/runs\/[\w-]+$/) && c.req.method === "GET") return next();
     if (path.match(/^\/api\/acp\/contexts\/[\w-]+$/) && c.req.method === "GET") return next();
-    if (path.match(/^\/api\/acp\/contexts\/[\w-]+\/messages$/) && c.req.method === "GET") return next();
     if (path.match(/^\/api\/acp\/agents\/.+$/) && c.req.method === "GET") return next();
     const header = c.req.header("Authorization") || "";
     const t = header.startsWith("Bearer ") ? header.slice(7) : "";
@@ -117,7 +122,7 @@ app.get("/", (c) => {
   .hero h1 span { background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
   .hero p.tagline { font-size: 1.25rem; color: #94a3b8; margin-bottom: 2rem; }
   .badges { display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; margin-bottom: 3rem; }
-  .badge { background: #1e1e2e; border: 1px solid #2e2e3e; padding: 0.3rem 0.8rem; border-radius: 999px; font-size: 0.8rem; color: #94a3b8; }
+  .badge { background: #1e1e2e; border: 1px solid #2e2e3e; padding: 0.3rem 0.8rem; border-radius: 9999px; font-size: 0.8rem; color: #94a3b8; }
   .section { max-width: 720px; margin: 0 auto; padding: 0 2rem 3rem; }
   .section h2 { font-size: 1.5rem; margin-bottom: 1rem; color: #f4f4f5; }
   .section h3 { font-size: 1.1rem; margin: 1.25rem 0 0.5rem; color: #c4b5fd; }
@@ -270,9 +275,6 @@ app.get("/api/dashboard", async (c) => {
     pre { background: #0f172a; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; }
     .token-input { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
     .token-input input { flex: 1; margin-bottom: 0; }
-    .tab-bar { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
-    .tab { padding: 0.5rem 1rem; border-radius: 6px 6px 0 0; cursor: pointer; background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-bottom: none; }
-    .tab.active { background: #334155; color: #4ade80; }
   </style>
 </head>
 <body>
@@ -313,17 +315,6 @@ app.get("/api/dashboard", async (c) => {
       <button onclick="createTask()">Create Task</button>
       <pre id="task-result"></pre>
     </div>
-
-    <div class="section">
-      <h3>Quick Test — ACP Run</h3>
-      <input type="text" id="runName" placeholder="Run name" value="test-run">
-      <input type="text" id="runAgent" placeholder="Agent ID" value="dashboard-agent">
-      <button onclick="createRun()">Create Run</button>
-      <button onclick="speakRun()" style="background:#3b82f6;margin-left:0.5rem">Speak to Run</button>
-      <input type="text" id="runMsg" placeholder="Message" value="Hello from run!" style="margin-top:0.5rem">
-      <div id="sse-status" style="color:#94a3b8;font-size:0.8rem;margin-top:0.5rem"></div>
-      <pre id="run-result"></pre>
-    </div>
   </div>
 
   <script>
@@ -331,8 +322,6 @@ app.get("/api/dashboard", async (c) => {
 
     const token = localStorage.getItem('litehub_token') || '';
     document.getElementById('token').value = token;
-    let currentRunId = null;
-    let eventSource = null;
 
     function saveToken() {
       localStorage.setItem('litehub_token', document.getElementById('token').value);
@@ -390,56 +379,6 @@ app.get("/api/dashboard", async (c) => {
       loadData();
     }
 
-    async function createRun() {
-      const name = document.getElementById('runName').value;
-      const agentId = document.getElementById('runAgent').value;
-      const res = await fetch('/api/acp/runs', {
-        method: 'POST', headers: headers(),
-        body: JSON.stringify({ name, agentId })
-      });
-      const j = await res.json();
-      document.getElementById('run-result').textContent = JSON.stringify(j, null, 2);
-      if (j.ok && j.run?.id) {
-        currentRunId = j.run.id;
-        startSSE(j.run.id);
-      }
-      loadData();
-    }
-
-    async function speakRun() {
-      if (!currentRunId) { alert('Create a run first'); return; }
-      const agentId = document.getElementById('runAgent').value;
-      const content = document.getElementById('runMsg').value;
-      const res = await fetch('/api/acp/contexts/' + currentRunId + '/speak', {
-        method: 'POST', headers: headers(),
-        body: JSON.stringify({ agentId, content })
-      });
-      const j = await res.json();
-      document.getElementById('run-result').textContent = JSON.stringify(j, null, 2);
-    }
-
-    function startSSE(runId) {
-      if (eventSource) eventSource.close();
-      const sseStatus = document.getElementById('sse-status');
-      sseStatus.textContent = 'SSE: Connecting to run ' + runId + '...';
-      eventSource = new EventSource('/api/acp/runs/' + runId + '/stream');
-      eventSource.addEventListener('init', (e) => {
-        const data = JSON.parse(e.data);
-        sseStatus.textContent = 'SSE: Connected — ' + data.messageCount + ' messages';
-      });
-      eventSource.addEventListener('messages', (e) => {
-        const data = JSON.parse(e.data);
-        sseStatus.textContent = 'SSE: ' + data.newMessages.length + ' new message(s) received';
-      });
-      eventSource.addEventListener('close', () => {
-        sseStatus.textContent = 'SSE: Stream closed';
-        eventSource.close();
-      });
-      eventSource.onerror = () => {
-        sseStatus.textContent = 'SSE: Connection error';
-      };
-    }
-
     loadData();
     setInterval(loadData, 5000);
   </script>
@@ -469,11 +408,12 @@ app.get("/api/skills", (c) => {
   });
 });
 
-// ─── MCP Discovery (Edge-safe stub — full MCP via Node.js only) ──────────
+// ─── MCP Discovery (Edge-safe) ───────────────────────────────────────────
+
 import { MCP_TOOLS } from "./mcp/tools.js";
 
 app.get("/api/mcp", (c) => {
-  const baseUrl = new URL(c.req.url).origin;
+  const baseUrl = getBaseUrl(c);
   const config = {
     mcpServers: {
       litehub: {
@@ -520,8 +460,12 @@ app.get("/api/mcp", (c) => {
   return c.json(config);
 });
 
-// MCP SSE / Streamable HTTP endpoints are mounted via mountMCPRoutes()
-// (Node.js only — not available in Edge Runtime)
+// ─── MCP SSE/Streamable endpoints (graceful fallback for Edge) ───────────
+const mcpNotAvailable = (c: any) => c.json({ ok: false, error: "MCP protocol requires Node.js runtime. Use localhost:3000 for MCP support" }, 501);
+app.get("/mcp", mcpNotAvailable);
+app.post("/mcp", mcpNotAvailable);
+app.delete("/mcp", mcpNotAvailable);
+app.all("/api/mcp/sse", mcpNotAvailable);
 
 // ─── API Root ────────────────────────────────────────────────────────────
 
@@ -556,11 +500,9 @@ app.post("/api/agent/register", async (c) => {
     const result = await registerAgent(
       db,
       { agentId, name, role, queues: queueInput, pollInterval },
-      // queueDescriptions: map queue names to descriptions if provided as objects
       Object.fromEntries(
         queueInput.map((q: any) => [typeof q === "string" ? q : q.name, typeof q === "string" ? "" : q.description || ""]),
       ),
-      // poolDescriptions
       Object.fromEntries(
         poolInput.map((p: any) => [typeof p === "string" ? p : p.name, { description: typeof p === "string" ? "" : p.description || "", maxMembers: typeof p === "string" ? undefined : p.maxMembers }]),
       ),
@@ -635,7 +577,6 @@ app.post("/api/agent/pipe", async (c) => {
     if (!(await ensureAgent(db, agentId))) {
       return c.json({ ok: false, error: "Agent not registered. Call register first." }, 403);
     }
-    // Pipe = consume from sourceQueue + produce to targetQueue (API compatibility)
     if (!(await queueExists(db, sourceQueue))) {
       return c.json({ ok: false, error: "Source queue not found." }, 404);
     }
@@ -644,7 +585,6 @@ app.post("/api/agent/pipe", async (c) => {
       return c.json({ ok: false, error: "源队列无数据" }, 404);
     }
     const input = consumed[0];
-    // Ensure target queue exists
     await ensureQueue(db, targetQueue, undefined, agentId);
     const output = await produce(db, targetQueue, String(data), agentId, {
       contentType,
@@ -790,7 +730,7 @@ app.post("/api/pool/speak", async (c) => {
 // ─── A2A Protocol Routes ─────────────────────────────────────────────────
 
 app.get("/.well-known/agent-card.json", (c) => {
-  const baseUrl = new URL(c.req.url).origin;
+  const baseUrl = getBaseUrl(c);
   return c.json({
     name: "LiteHub",
     version: "2.0.0",
@@ -806,7 +746,6 @@ app.get("/.well-known/agent-card.json", (c) => {
   });
 });
 
-// A2A Tasks
 app.get("/api/a2a/tasks", async (c) => {
   try {
     const db = c.get("db");
@@ -915,7 +854,6 @@ app.get("/api/webhook/test", async (c) => {
 
 // ─── ACP Protocol Routes ─────────────────────────────────────────────────
 
-// ACP Runs
 app.get("/api/acp/runs", async (c) => {
   try {
     const db = c.get("db");
@@ -939,7 +877,6 @@ app.post("/api/acp/runs", async (c) => {
   }
 });
 
-// ACP Run SSE stream
 app.get("/api/acp/runs/:id/stream", async (c) => {
   try {
     const db = c.get("db");
@@ -954,7 +891,6 @@ app.get("/api/acp/runs/:id/stream", async (c) => {
         let lastCount = 0;
         let closed = false;
 
-        // Initial snapshot
         (async () => {
           const { messages: msgs } = await getMessages(db, poolName, { limit: 100 });
           lastCount = msgs.length;
@@ -962,7 +898,6 @@ app.get("/api/acp/runs/:id/stream", async (c) => {
           controller.enqueue(encoder.encode(`event: init\ndata: ${JSON.stringify(initData)}\n\n`));
         })();
 
-        // Poll every 2s
         const interval = setInterval(async () => {
           if (closed) { clearInterval(interval); return; }
           try {
@@ -973,17 +908,15 @@ app.get("/api/acp/runs/:id/stream", async (c) => {
               lastCount = current.length;
             }
             controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
-          } catch { /* ignore poll errors */ }
+          } catch {}
         }, 2000);
 
-        // Cleanup
         c.req.raw.signal.addEventListener('abort', () => {
           closed = true;
           clearInterval(interval);
           try { controller.close(); } catch {}
         });
 
-        // Auto-close after 5 min
         setTimeout(() => {
           closed = true;
           clearInterval(interval);
@@ -1032,7 +965,6 @@ app.post("/api/acp/runs/cancel", async (c) => {
   }
 });
 
-// ACP Contexts
 app.get("/api/acp/contexts", async (c) => {
   try {
     const db = c.get("db");
@@ -1124,7 +1056,6 @@ app.post("/api/acp/contexts/:id/speak", async (c) => {
   }
 });
 
-// ACP Agents discovery
 app.get("/api/acp/agents", async (c) => {
   try {
     const db = c.get("db");
