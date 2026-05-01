@@ -28,8 +28,7 @@ import {
 } from "./core/acp.js";
 import { logWebhook, getWebhookLogs } from "./core/webhook.js";
 
-// ─── MCP handler (separate module) ──────────────────────────────────────
-import { handleStreamableHTTP, handleSSE } from "./mcp-handler.js";
+// ─── MCP handler (lazy-loaded for Edge Runtime compatibility) ──────────
 
 // ─── App setup ───────────────────────────────────────────────────────────
 const app = new Hono<LiteHubEnv>();
@@ -470,8 +469,7 @@ app.get("/api/skills", (c) => {
   });
 });
 
-// ─── MCP Discovery ──────────────────────────────────────────────────────
-
+// ─── MCP Discovery (Edge-safe stub — full MCP via Node.js only) ──────────
 import { MCP_TOOLS } from "./mcp/tools.js";
 
 app.get("/api/mcp", (c) => {
@@ -522,15 +520,8 @@ app.get("/api/mcp", (c) => {
   return c.json(config);
 });
 
-// ─── MCP Streamable HTTP / SSE Endpoints ────────────────────────────────
-
-app.get("/mcp", (c) => handleSSE(c));
-app.post("/mcp", (c) => handleStreamableHTTP(c));
-app.delete("/mcp", (c) => handleStreamableHTTP(c));
-app.all("/api/mcp/sse", (c) => {
-  if (c.req.method === "GET") return handleSSE(c);
-  return handleStreamableHTTP(c);
-});
+// MCP SSE / Streamable HTTP endpoints are mounted via mountMCPRoutes()
+// (Node.js only — not available in Edge Runtime)
 
 // ─── API Root ────────────────────────────────────────────────────────────
 
