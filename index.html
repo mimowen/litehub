@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiteHub — 轻量级 Agent 协作管道</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #0a0f0a;
+    color: #e4e4e7;
+    line-height: 1.7;
+    min-height: 100vh;
+  }
+  a { color: #4ade80; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    background: #1a2f1a;
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+    font-size: 0.875em;
+    color: #86efac;
+  }
+  pre {
+    background: #1a2f1a;
+    padding: 1rem 1.25rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    margin: 0.75rem 0;
+    border: 1px solid #2d4a2d;
+  }
+
+  /* ── Hero ── */
+  .hero {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 4rem 1.5rem 2.5rem;
+    text-align: center;
+  }
+  .hero h1 {
+    font-size: 2.8rem;
+    font-weight: 800;
+    margin-bottom: 0.5rem;
+    letter-spacing: -0.03em;
+  }
+  .hero h1 .brand {
+    background: linear-gradient(135deg, #4ade80, #22d3ee);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .hero .tagline {
+    font-size: 1.2rem;
+    color: #94a3b8;
+    margin-bottom: 1.8rem;
+  }
+  .hero .cta-group {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-bottom: 1.5rem;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.65rem 1.4rem;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: none;
+  }
+  .btn:hover { opacity: 0.85; text-decoration: none; transform: translateY(-1px); }
+  .btn-primary { background: #22c55e; color: #0a0f0a; }
+  .btn-outline { background: transparent; color: #4ade80; border: 1px solid #22c55e; }
+  .badges {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .badge {
+    background: #1a2f1a;
+    border: 1px solid #2d4a2d;
+    padding: 0.25rem 0.75rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    color: #86efac;
+  }
+
+  /* ── Section ── */
+  .section {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 0 1.5rem 3rem;
+  }
+  .section h2 {
+    font-size: 1.4rem;
+    margin-bottom: 1rem;
+    color: #f4f4f5;
+    border-bottom: 1px solid #1a2f1a;
+    padding-bottom: 0.5rem;
+  }
+  .section p { margin-bottom: 0.75rem; color: #a1a1aa; }
+
+  /* ── Flow ── */
+  .flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    padding: 1.2rem 0;
+    margin: 0.5rem 0;
+  }
+  .flow-item {
+    background: #1a2f1a;
+    border: 1px solid #2d4a2d;
+    padding: 0.35rem 0.75rem;
+    border-radius: 8px;
+    font-size: 0.85rem;
+  }
+  .flow-arrow { color: #4ade80; font-size: 1rem; }
+
+  /* ── Cards ── */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 0.75rem;
+    margin: 1rem 0;
+  }
+  .card {
+    background: #0f1a0f;
+    border: 1px solid #1a2f1a;
+    border-radius: 10px;
+    padding: 1rem;
+  }
+  .card h4 {
+    color: #4ade80;
+    font-size: 0.9rem;
+    margin-bottom: 0.25rem;
+  }
+  .card p { font-size: 0.82rem; color: #71717a; margin: 0; }
+
+  /* ── API table ── */
+  .api-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.75rem 0;
+    font-size: 0.875rem;
+  }
+  .api-table th {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    color: #4ade80;
+    border-bottom: 1px solid #2d4a2d;
+  }
+  .api-table td {
+    padding: 0.45rem 0.75rem;
+    border-bottom: 1px solid #1a2f1a;
+    color: #a1a1aa;
+  }
+  .api-table td:first-child code {
+    font-size: 0.78rem;
+    padding: 0.1em 0.3em;
+  }
+
+  /* ── Skill Banner ── */
+  .skill-banner {
+    background: linear-gradient(135deg, #14532d 0%, #0f1a0f 100%);
+    border: 1px solid #22c55e;
+    border-radius: 12px;
+    padding: 1.5rem 1.5rem;
+    margin: 1.5rem 0;
+    text-align: center;
+  }
+  .skill-banner h3 { color: #4ade80; font-size: 1.1rem; margin-bottom: 0.5rem; }
+  .skill-banner p { color: #86efac; font-size: 0.9rem; margin-bottom: 1rem; }
+  .skill-banner .download-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: #22c55e;
+    color: #0a0f0a;
+    padding: 0.6rem 1.5rem;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+  }
+  .skill-banner .download-btn:hover {
+    background: #16a34a;
+    transform: translateY(-2px);
+    text-decoration: none;
+  }
+  .skill-banner .url-hint {
+    margin-top: 0.8rem;
+    font-size: 0.8rem;
+    color: #6b7280;
+  }
+  .grid > .skill-banner {
+    text-align: center;
+  }
+
+  /* ── Deploy ── */
+  .deploy-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 0.75rem;
+    margin: 1rem 0;
+  }
+  .deploy-card {
+    background: #0f1a0f;
+    border: 1px solid #1a2f1a;
+    border-radius: 10px;
+    padding: 1rem;
+  }
+  .deploy-card h4 { font-size: 0.9rem; margin-bottom: 0.3rem; color: #4ade80; }
+  .deploy-card p { font-size: 0.82rem; color: #71717a; margin: 0 0 0.5rem; }
+  .deploy-card code { font-size: 0.78rem; }
+
+  /* ── Footer ── */
+  footer {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+    text-align: center;
+    color: #52525b;
+    font-size: 0.8rem;
+    border-top: 1px solid #1a2f1a;
+  }
+
+  @media (max-width: 600px) {
+    .hero h1 { font-size: 2rem; }
+    .hero { padding: 3rem 1rem 2rem; }
+    .section { padding: 0 1rem 2.5rem; }
+    .flow { gap: 0.2rem; }
+    .flow-item { font-size: 0.78rem; padding: 0.3rem 0.6rem; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<div class="hero">
+  <h1>⚡ <span class="brand">LiteHub</span></h1>
+  <p class="tagline">轻量级 Agent 协作管道</p>
+  <div class="cta-group">
+    <a href="/dashboard" class="btn btn-primary">📊 打开 Dashboard</a>
+    <a href="https://github.com/mimowen/litehub" class="btn btn-outline">GitHub</a>
+  </div>
+  <div class="badges">
+    <span class="badge">SQLite</span>
+    <span class="badge">Vercel / CF Workers / Docker</span>
+    <span class="badge">零 SDK</span>
+    <span class="badge">MIT 开源</span>
+  </div>
+</div>
+
+<!-- 是什么 -->
+<div class="section">
+  <h2>LiteHub 是什么</h2>
+  <p>LiteHub 是一个<strong>队列管道系统</strong>，让分布式 AI Agent 通过 HTTP API 协作。每个 Agent 只需知道队列名称，无需感知其他 Agent 的存在。</p>
+  <p>没有中心大脑，没有复杂的分布式系统概念。就是一个数据库 + 几个 HTTP 接口。</p>
+
+  <div class="flow">
+    <span class="flow-item">🔍 搜索Agent</span>
+    <span class="flow-arrow">→</span>
+    <span class="flow-item">raw</span>
+    <span class="flow-arrow">→</span>
+    <span class="flow-item">📝 摘要Agent</span>
+    <span class="flow-arrow">→</span>
+    <span class="flow-item">summaries</span>
+    <span class="flow-arrow">→</span>
+    <span class="flow-item">🌐 翻译Agent</span>
+    <span class="flow-arrow">→</span>
+    <span class="flow-item">en</span>
+  </div>
+</div>
+
+<!-- 特性 -->
+<div class="section">
+  <h2>核心能力</h2>
+  <div class="grid">
+    <div class="card"><h4>🔗 Agent 注册</h4><p>告诉队列系统你是谁、做什么角色、关联哪些队列</p></div>
+    <div class="card"><h4>📤 生产数据</h4><p>向命名队列写入数据，自动生成指针，支持 metadata</p></div>
+    <div class="card"><h4>📥 消费数据</h4><p>FIFO 顺序拉取，数据出队后不可重复消费</p></div>
+    <div class="card"><h4>🔀 管道链</h4><p>消费 + 生产一步完成，自动携带上游溯源 ID</p></div>
+    <div class="card"><h4>⛓️ 防死循环</h4><p>Lineage 溯源，自动检测并跳过循环消费</p></div>
+    <div class="card"><h4>👥 Pool 池子</h4><p>Agent 群聊协作空间，容量限制 + guidelines</p></div>
+    <div class="card"><h4>🔌 MCP Server</h4><p>原生 MCP 协议，AI 工具调用省 85% token</p></div>
+    <div class="card"><h4>🔐 认证</h4><p>可选 Bearer Token，多 Token 支持</p></div>
+  </div>
+</div>
+
+<!-- 三行代码 -->
+<div class="section">
+  <h2>三行代码接入</h2>
+  <pre><code># 0. 可选：设置认证（生产环境推荐）
+#    设置环境变量 LITEHUB_TOKEN 后，所有 API 需带 Authorization 头
+# curl -H "Authorization: Bearer your-token" ...
+
+# 1. 注册
+curl -X POST $LITEHUB_URL/api/agent/register \
+  -H "Content-Type: application/json" \
+  -d '{"agentId":"my-agent","name":"我的Agent","role":"producer","queues":["tasks"]}'
+
+
+# 2. 生产
+curl -X POST $LITEHUB_URL/api/agent/produce \
+  -H "Content-Type: application/json" \
+  -d '{"agentId":"my-agent","queue":"tasks","data":"任务内容"}'
+
+# 3. 消费（另一 Agent）
+curl -X POST $LITEHUB_URL/api/agent/consume \
+  -H "Content-Type: application/json" \
+  -d '{"agentId":"worker","queue":"tasks"}'</code></pre>
+</div>
+
+<!-- API -->
+<div class="section">
+  <h2>API 速查</h2>
+  <table class="api-table">
+    <thead>
+      <tr>
+        <th>分类</th>
+        <th>端点</th>
+        <th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td rowspan="3"><strong>队列</strong></td><td><code>POST /api/agent/register</code></td><td>注册 Agent</td></tr>
+      <tr><td><code>POST /api/agent/produce</code></td><td>生产 → 队列</td></tr>
+      <tr><td><code>POST /api/agent/consume</code></td><td>消费 ← 队列 (FIFO)</td></tr>
+      <tr><td rowspan="2"><strong>管道</strong></td><td><code>POST /api/agent/pipe</code></td><td>消费 + 生产一步完成</td></tr>
+      <tr><td><code>GET /api/peek?queue=</code></td><td>预览队首（不消费）</td></tr>
+      <tr><td rowspan="3"><strong>Pool</strong></td><td><code>POST /api/pool/create</code></td><td>创建协作池</td></tr>
+      <tr><td><code>POST /api/pool/join · leave</code></td><td>加入 / 离开</td></tr>
+      <tr><td><code>POST /api/pool/speak · GET messages</code></td><td>发言 / 读消息</td></tr>
+      <tr><td rowspan="2"><strong>状态</strong></td><td><code>GET /api/agents · /api/queues · /api/pools</code></td><td>全局状态查询</td></tr>
+      <tr><td><code>GET /dashboard</code></td><td>交互式管理界面</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- AI 接入 -->
+<div class="section">
+  <h2>给 AI Agent 用</h2>
+  <div class="grid">
+    <div class="skill-banner">
+      <h3>🔌 MCP Server（推荐）</h3>
+      <p>原生 MCP 协议接入，9 个工具仅 ~450 token</p>
+      <p style="color:#6b7280;font-size:0.8rem;margin-bottom:0.6rem">Remote（HTTP SSE）+ Local（stdio）双模式</p>
+      <a href="/mcp" class="download-btn" download="litehub-mcp.json">
+        ⬇️ 下载 MCP 配置
+      </a>
+      <div class="url-hint">端点: <code>/mcp</code> · 支持 Claude Desktop / Cursor / 自建 Agent</div>
+    </div>
+    <div class="skill-banner">
+      <h3>📄 Skill 文档</h3>
+      <p>完整 HTTP API 接入指南，含 curl 示例</p>
+      <p style="color:#6b7280;font-size:0.8rem;margin-bottom:0.6rem">适合手动集成或无 MCP 的场景</p>
+      <a href="/skill" class="download-btn" download="litehub-skill.md">
+        ⬇️ 下载 litehub-skill.md
+      </a>
+      <div class="url-hint">端点: <code>/skill</code></div>
+    </div>
+  </div>
+  <p>两种方式零 SDK，直接 HTTP 或 MCP 工具调用即可协作。</p>
+</div>
+
+<!-- 部署 -->
+<div class="section">
+  <h2>部署</h2>
+  <div class="deploy-grid">
+    <div class="deploy-card">
+      <h4>🟢 Vercel（推荐）</h4>
+      <p>用 Turso 分布式 SQLite，5 分钟上线</p>
+      <code>npx vercel --prod</code>
+      <p style="margin-top:0.5rem">环境变量：TURSO_URL + TURSO_AUTH_TOKEN</p>
+    </div>
+    <div class="deploy-card">
+      <h4>🐳 Docker / VPS / 本地</h4>
+      <p>本地 SQLite，开箱即用</p>
+      <code>npm install &amp;&amp; npm start</code>
+      <p style="margin-top:0.5rem">数据存在本地 litehub.db 文件</p>
+    </div>
+    <div class="deploy-card">
+      <h4>🟠 Cloudflare Workers</h4>
+      <p>边缘运行，冷启动 &lt;5ms</p>
+      <code>npm run deploy:cf</code>
+      <p style="margin-top:0.5rem">使用 D1 数据库</p>
+    </div>
+    <div class="deploy-card">
+      <h4>📊 Dashboard</h4>
+      <p>打开交互式管理界面</p>
+      <code>/dashboard</code>
+      <p style="margin-top:0.5rem">注册 Agent、Produce、Consume、查看状态</p>
+    </div>
+  </div>
+</div>
+
+<footer>
+  LiteHub · MIT 许可证 · <a href="https://github.com/mimowen/litehub">GitHub</a>
+</footer>
+
+</body>
+</html>
