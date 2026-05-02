@@ -56,30 +56,108 @@ npm start          # → http://localhost:3000
 
 ```
 litehub/
-├── api/                          ← Vercel Edge Runtime 入口
-│   ├── main.ts                   #   唯一 API 入口（Edge Runtime）
-│   └── vercel-db.ts              #   Turso 数据库客户端
-├── src/                          ← 本地 / VPS / Docker 入口
-│   ├── server.ts                 #   Node.js 启动文件
-│   ├── app.ts                    #   Hono 应用入口
-│   ├── lib/
-│   │   ├── db.ts                 #   SQLite 初始化（better-sqlite3）
-│   │   ├── queue.ts             #   队列核心逻辑
-│   │   ├── mcp-handler.ts       #   MCP 协议实现（Streamable HTTP + SSE）
-│   │   └── types.ts             #   类型定义
+├── api/                          ← Vercel 部署入口（仅 2 个函数，符合 12 路由限制）
+│   ├── main.ts                   #   Edge Runtime 入口（所有 /api/* 路由）
+│   └── mcp-sse.ts                #   Node.js Runtime 入口（MCP SSE 端点）
+├── src/
+│   ├── index.ts                  ← Hono 应用：单入口路由分发 → handlers/
+│   ├── server.ts                 #   Node.js 本地启动文件
+│   ├── types.ts                  #   共享类型定义
+│   ├── utils.ts                  #   getBaseUrl、buildMcpDiscoveryConfig
+│   ├── middleware/
+│   │   └── auth.ts               #   Bearer Token 认证中间件（每次请求读取 env）
+│   ├── handlers/                 ← 业务逻辑层（路由分发目标）
+│   │   ├── agents.ts             #   Agent 注册/查询
+│   │   ├── queues.ts             #   Queue produce/consume/pipe/peek
+│   │   ├── pools.ts              #   Pool create/join/leave/speak
+│   │   ├── a2a.ts                #   A2A Task CRUD + 推送通知
+│   │   ├── acp.ts                #   ACP Run/Context CRUD + SSE 流
+│   │   ├── webhook.ts            #   Webhook 测试/日志
+│   │   └── pages.ts              #   Dashboard 数据 + MCP 发现 + Skill 下载
+│   ├── core/                     ← 核心业务逻辑（纯函数，无 HTTP 依赖）
+│   │   ├── queue.ts              #   队列：produce/consume/peek/pipe/agent
+│   │   ├── pool.ts               #   池子：create/join/leave/speak/messages
+│   │   ├── a2a.ts                #   A2A：Task 映射到 Queue
+│   │   ├── acp.ts                #   ACP：Run 映射到 Queue，Context 映射到 Pool
+│   │   └── webhook.ts            #   Webhook 日志记录
+│   ├── protocols/                ← 协议适配层（对模型/工具透明）
+│   │   ├── a2a.ts                #   A2A JSON-RPC 2.0 标准适配器
+│   │   └── acp.ts                #   ACP REST API 标准适配器
+│   ├── mcp-handler.ts            #   MCP 协议实现（Streamable HTTP + SSE）
+│   ├── mcp-routes.ts             #   MCP 路由挂载（Node.js Runtime 专用）
+│   ├── mcp/
+│   │   └── tools.ts              #   MCP 工具定义
+│   ├── utils/
+│   │   └── response.ts           #   统一响应格式 ok()/fail()/send()
 │   └── adapters/
-│       ├── vercel.ts             #   Vercel 适配器（废弃，保留参考）
-│       └── cf-workers.ts         #   Cloudflare Workers 适配器（保留参考）
-├── index.html                    #   项目介绍首页
-├── SKILL.md                      #   AI Agent 接入指南（/skill 端点）
-├── Dockerfile
-├── wrangler.toml
+│       └── db/
+│           ├── interface.ts      #   DbClient 抽象接口
+│           ├── sqlite.ts         #   本地 SQLite 适配器（better-sqlite3）
+│           └── turso.ts          #   Turso 分布式 SQLite 适配器
+├── vercel.json                   #   Vercel 路由重写规则
+├── SKILL.md                      #   AI Agent 接入指南
 └── package.json
 ```
 
-> **注意**：
-> - `api/` 目录：使用 Vercel Edge Runtime，支持全球边缘部署，响应更快
-> - `src/` 目录：用于本地/VPS/Docker 运行（依赖 better-sqlite3，原生模块无法在 Vercel Edge Runtime 中使用）
+## 架构设计
+
+### 单入口路由分发
+
+LiteHub 采用**单入口路由分发**架构，所有 API 请求通过一个 Hono 应用入口（`src/index.ts`），由路由层分发到对应的 handler：
+
+```
+HTTP Request → Hono Router → authMiddleware → handler → core → db
+```
+
+**为什么这样设计？**
+
+- **Vercel 12 路由限制**：Vercel 免费版限制 12 个 Serverless Function。我们只使用 2 个：
+  - `api/main.ts`（Edge Runtime）：处理所有 `/api/*` 路由
+  - `api/mcp-sse.ts`（Node.js Runtime）：处理 MCP SSE 端点（需要 `@modelcontextprotocol/sdk`）
+- **模块解耦**：修改 Queue 逻辑只需改 `handlers/queues.ts` + `core/queue.ts`，不影响其他模块
+- **统一认证**：`middleware/auth.ts` 在路由层统一拦截，handler 无需关心认证
+
+### 三层分离
+
+| 层 | 目录 | 职责 | 依赖 |
+|----|------|------|------|
+| **路由层** | `src/index.ts` | URL → handler 映射 | handlers, middleware |
+| **Handler 层** | `src/handlers/` | 参数校验、调用 core、格式化响应 | core, utils/response |
+| **Core 层** | `src/core/` | 纯业务逻辑，无 HTTP 依赖 | db adapter |
+
+**关键原则**：
+- Core 层不依赖 Hono，可独立测试
+- Handler 层只做参数校验和响应格式化，不含业务逻辑
+- 路由层只做分发，不含任何逻辑
+
+### 协议透明性
+
+A2A 和 ACP 协议适配器（`src/protocols/`）让 LiteHub 充当**中间介质**：
+
+- **A2A**：对模型来说，LiteHub 就是另一个 Agent；Task 映射到 Queue，消息通过队列传递
+- **ACP**：对工具来说，LiteHub 就是运行环境；Run 映射到 Queue，Context 映射到 Pool
+- **MCP**：对 AI 客户端来说，LiteHub 就是标准 MCP Server
+
+模型和工具使用这些协议时，**感受不到 LiteHub 的存在**。
+
+### 统一响应格式
+
+所有 handler 返回统一格式，由 `send()` 自动设置 HTTP 状态码：
+
+```typescript
+// 成功
+{ ok: true, ...data }
+
+// 失败（自动从 status 字段提取 HTTP 状态码）
+{ ok: false, error: "错误信息" }
+```
+
+### 认证中间件
+
+- 每次请求实时读取 `LITEHUB_TOKEN` 环境变量（支持运行时动态变更）
+- GET 列表端点默认公开（方便 Agent polling）
+- POST 创建/修改操作需要 Bearer Token
+- `/api/mcp/sse` 公开（MCP 客户端通过 headers 传递认证）
 
 ## 部署
 

@@ -1,106 +1,44 @@
 // src/index.ts — Unified Hono app for LiteHub
-// Uses async core/ functions via DbClient injected through Hono context
+// Single entry point: all API routes dispatch to handlers/
+// Vercel route limit: only 2 functions (api/main + api/mcp-sse)
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import type { LiteHubEnv } from "./types.js";
+import { getBaseUrl } from "./utils.js";
+import { authMiddleware } from "./middleware/auth.js";
+import { ok, fail, send, sseHeaders } from "./utils/response.js";
 
-// ─── Core imports ────────────────────────────────────────────────────────
-import {
-  ensureAgent, registerAgent, getAgent, listAgents,
-  queueExists, ensureQueue, getQueueStatus, listQueues,
-  produce, consume, peek,
-} from "./core/queue.js";
-import {
-  createPool, getPool, listPools,
-  joinPool, leavePool, listMembers,
-  speak, getMessages,
-} from "./core/pool.js";
-import {
-  createTask, getTask, listTasks, cancelTask, updateTask,
-  setPushNotification, getPushNotification,
-  sendToTask, createTaskSubscription,
-} from "./core/a2a.js";
-import {
-  createRun, getRun, listRuns, cancelRun,
-  createContext, getContext, listContexts,
-  joinContext, leaveContext, speakContext,
-  getContextMessages, getACPAgent,
-} from "./core/acp.js";
-import { logWebhook, getWebhookLogs } from "./core/webhook.js";
-import { getBaseUrl, buildMcpDiscoveryConfig } from "./utils.js";
+import * as agentH from "./handlers/agents.js";
+import * as queueH from "./handlers/queues.js";
+import * as poolH from "./handlers/pools.js";
+import * as a2aH from "./handlers/a2a.js";
+import * as acpH from "./handlers/acp.js";
+import * as webhookH from "./handlers/webhook.js";
+import * as pageH from "./handlers/pages.js";
 import { handleA2ARequest, handleA2AStream } from "./protocols/a2a.js";
-import * as acp from "./protocols/acp.js";
 
-// ─── App setup ───────────────────────────────────────────────────────────
 const app = new Hono<LiteHubEnv>();
 export default app;
 
 app.use("*", logger());
 app.use("*", cors({ origin: process.env.LITEHUB_CORS_ORIGIN || "*" }));
 
-// ─── DbClient injection placeholder ──────────────────────────────────────
-// Platform entry points set db before routes run.
-// If db is not set, return error for API routes.
 app.use("/api/*", async (c, next) => {
-  const db = c.get("db");
-  if (!db) {
-    return c.json({ ok: false, error: "Database not initialized" }, 500);
-  }
+  if (!c.get("db")) return c.json(fail("Database not initialized", 500), 500);
   await next();
 });
-app.use("/mcp", async (c, next) => {
-  const db = c.get("db");
-  if (!db) {
-    return c.json({ ok: false, error: "Database not initialized" }, 500);
-  }
+app.use("/a2a", async (c, next) => {
+  if (!c.get("db")) return c.json(fail("Database not initialized", 500), 500);
   await next();
 });
 
-// ─── Global error handler ────────────────────────────────────────────────
 app.onError((err, c) => {
   console.error("Unhandled error:", err);
-  return c.json({ ok: false, error: err.message || "Internal server error" }, 500);
+  return c.json(fail(err.message || "Internal server error", 500), 500);
 });
 
-// ─── Auth (disabled when LITEHUB_TOKEN is not set) ──────────────────────
-const TOKEN = process.env.LITEHUB_TOKEN || "";
-const EXTRA_TOKENS = (process.env.LITEHUB_TOKENS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-
-const PUBLIC_PATHS = new Set([
-  "/.well-known/agent-card.json",
-  "/api/webhook/test",
-  "/api/agents", "/api/queues", "/api/pools",
-  "/api/peek", "/api/skill", "/api/skills", "/api/dashboard",
-  "/api/mcp",
-  "/api/a2a/tasks", "/api/acp/runs", "/api/acp/contexts", "/api/acp/agents",
-]);
-
-if (TOKEN) {
-  const validTokens = EXTRA_TOKENS.length > 0
-    ? new Set([TOKEN, ...EXTRA_TOKENS])
-    : new Set([TOKEN]);
-  app.use("/api/*", async (c, next) => {
-    const fullUrl = new URL(c.req.url, getBaseUrl(c));
-    const path = fullUrl.pathname;
-    if (c.req.method === "GET" && PUBLIC_PATHS.has(path)) return next();
-    if (path === "/api/webhook/test") return next();
-    if (path.match(/^\/api\/acp\/runs\/[^/]+\/stream$/)) return next();
-    if (path.match(/^\/api\/a2a\/tasks\/[\w-]+$/) && c.req.method === "GET") return next();
-    if (path.match(/^\/api\/acp\/runs\/[\w-]+$/) && c.req.method === "GET") return next();
-    if (path.match(/^\/api\/acp\/contexts\/[\w-]+$/) && c.req.method === "GET") return next();
-    if (path.match(/^\/api\/acp\/agents\/.+$/) && c.req.method === "GET") return next();
-    const header = c.req.header("Authorization") || "";
-    const t = header.startsWith("Bearer ") ? header.slice(7) : "";
-    if (!t || !validTokens.has(t)) {
-      return c.json({ ok: false, error: "Unauthorized" }, 401);
-    }
-    await next();
-  });
-}
+app.use("/api/*", authMiddleware);
 
 // ─── Landing Page ────────────────────────────────────────────────────────
 
@@ -138,103 +76,57 @@ app.get("/", (c) => {
   footer { max-width: 720px; margin: 0 auto; padding: 2rem; text-align: center; color: #52525b; font-size: 0.8rem; border-top: 1px solid #1e1e2e; }
   @media (max-width: 600px) { .hero h1 { font-size: 2rem; } .grid { grid-template-columns: 1fr; } }
 </style></head><body>
-
 <div class="hero">
   <h1>⚡ <span>LiteHub</span></h1>
   <p class="tagline">Lightweight Agent Collaboration Hub</p>
   <div class="badges">
-    <span class="badge">14KB Core</span>
-    <span class="badge">SQLite</span>
-    <span class="badge">Vercel / CF Workers / VPS</span>
-    <span class="badge">Open Source</span>
+    <span class="badge">14KB Core</span><span class="badge">SQLite</span><span class="badge">Vercel / CF Workers / VPS</span><span class="badge">Open Source</span>
   </div>
 </div>
-
 <div class="section">
   <h2>What is LiteHub?</h2>
   <p>LiteHub is a lightweight hub that lets <strong>distributed AI agents collaborate through named queues</strong>. Think of it as a water pipe system — agents produce data into queues, and other agents consume from those queues, forming processing pipelines.</p>
   <p>No orchestrator. No central brain. Just agents passing data through simple HTTP APIs.</p>
-
   <div class="flow">
-    <span class="node">🔍 Searcher</span>
-    <span class="arrow">→</span>
-    <span class="node">raw</span>
-    <span class="arrow">→</span>
-    <span class="node">📝 Summarizer</span>
-    <span class="arrow">→</span>
-    <span class="node">summaries</span>
-    <span class="arrow">→</span>
-    <span class="node">🌐 Translator</span>
-    <span class="arrow">→</span>
-    <span class="node">en-summaries</span>
-    <span class="arrow">→</span>
-    <span class="node">💬 Notifier</span>
+    <span class="node">🔍 Searcher</span><span class="arrow">→</span><span class="node">raw</span><span class="arrow">→</span><span class="node">📝 Summarizer</span><span class="arrow">→</span><span class="node">summaries</span><span class="arrow">→</span><span class="node">🌐 Translator</span><span class="arrow">→</span><span class="node">en-summaries</span><span class="arrow">→</span><span class="node">💬 Notifier</span>
   </div>
 </div>
-
 <div class="section">
   <h2>What Can It Do?</h2>
   <div class="grid">
-    <div class="card"><h4>🔗 Agent Registration</h4><p>Register agents with roles (producer/consumer/both) and queue subscriptions</p></div>
-    <div class="card"><h4>📤 Produce</h4><p>Push data into a named queue. Data is stored as a file pointer in SQLite</p></div>
-    <div class="card"><h4>📥 Consume</h4><p>Pull data from a queue (FIFO). Returns base64 + utf-8 dual format</p></div>
-    <div class="card"><h4>🔀 Pipe</h4><p>Consume from one queue, produce to another — one API call. Carries source lineage in metadata</p></div>
-    <div class="card"><h4>👀 Peek</h4><p>Preview the next item in a queue without consuming it</p></div>
-    <div class="card"><h4>📊 Dashboard</h4><p>Live overview of agents, queues, pending/consumed counts</p></div>
+    <div class="card"><h4>🔗 Agent Registration</h4><p>Register agents with roles and queue subscriptions</p></div>
+    <div class="card"><h4>📤 Produce</h4><p>Push data into a named queue</p></div>
+    <div class="card"><h4>📥 Consume</h4><p>Pull data from a queue (FIFO)</p></div>
+    <div class="card"><h4>🔀 Pipe</h4><p>Consume + produce in one call with lineage</p></div>
+    <div class="card"><h4>👀 Peek</h4><p>Preview queue head without consuming</p></div>
+    <div class="card"><h4>📊 Dashboard</h4><p>Live overview of agents, queues, counts</p></div>
   </div>
 </div>
-
 <div class="section">
   <h2>Quick Start</h2>
   <h3>1. Register an Agent</h3>
-<pre>curl -X POST {{HOST}}/api/agent/register \
-  -H "Content-Type: application/json" \
+<pre>curl -X POST {{HOST}}/api/agent/register \\
+  -H "Content-Type: application/json" \\
   -d '{"agentId":"searcher","name":"Search Agent","role":"producer","queues":["raw"]}'</pre>
-
   <h3>2. Produce Data</h3>
-<pre>curl -X POST {{HOST}}/api/agent/produce \
-  -H "Content-Type: application/json" \
+<pre>curl -X POST {{HOST}}/api/agent/produce \\
+  -H "Content-Type: application/json" \\
   -d '{"agentId":"searcher","queue":"raw","data":"Found: ..."}'</pre>
-
   <h3>3. Consume Data</h3>
-<pre>curl -X POST {{HOST}}/api/agent/consume \
-  -H "Content-Type: application/json" \
+<pre>curl -X POST {{HOST}}/api/agent/consume \\
+  -H "Content-Type: application/json" \\
   -d '{"agentId":"writer","queue":"raw"}'</pre>
-
-  <h3>4. Pipe (Consume → Produce)</h3>
-<pre>curl -X POST {{HOST}}/api/agent/pipe \
-  -H "Content-Type: application/json" \
-  -d '{"agentId":"writer","sourceQueue":"raw","targetQueue":"drafts","data":"Article draft..."}'</pre>
 </div>
-
-<div class="section">
-  <h2>API Reference</h2>
-  <table style="width:100%;border-collapse:collapse;margin:0.75rem 0">
-    <tr style="text-align:left"><th style="padding:0.5rem;color:#60a5fa">Method</th><th style="padding:0.5rem;color:#60a5fa">Endpoint</th><th style="padding:0.5rem;color:#60a5fa">Description</th></tr>
-    <tr><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e"><code>POST</code></td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e">/api/agent/register</td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e;color:#a1a1aa">Register an agent</td></tr>
-    <tr><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e"><code>POST</code></td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e">/api/agent/produce</td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e;color:#a1a1aa">Push data to a queue</td></tr>
-    <tr><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e"><code>POST</code></td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e">/api/agent/consume</td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e;color:#a1a1aa">Pull data from a queue</td></tr>
-    <tr><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e"><code>POST</code></td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e">/api/agent/pipe</td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e;color:#a1a1aa">Consume + produce in one call</td></tr>
-    <tr><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e"><code>GET</code></td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e">/api/agents</td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e;color:#a1a1aa">List all agents</td></tr>
-    <tr><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e"><code>GET</code></td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e">/api/queues</td><td style="padding:0.4rem 0.5rem;border-bottom:1px solid #1e1e2e;color:#a1a1aa">List all queues with stats</td></tr>
-    <tr><td style="padding:0.4rem 0.5rem"><code>GET</code></td><td style="padding:0.4rem 0.5rem">/api/peek?queue=name</td><td style="padding:0.4rem 0.5rem;color:#a1a1aa">Preview queue head without consuming</td></tr>
-  </table>
-</div>
-
 <div class="section">
   <h2>For AI Agents — Skill</h2>
-  <p>LiteHub provides a <strong>SKILL.md</strong> that any AI agent can download and use to immediately interact with a LiteHub instance.</p>
+  <p>LiteHub provides a <strong>SKILL.md</strong> that any AI agent can download and use.</p>
   <div class="skill-banner">
     <h3>📄 Download the Skill</h3>
     <p>Point your AI agent to this URL:</p>
     <span class="url">{{HOST}}/skill</span>
   </div>
-  <p>The skill tells the AI how to register, produce, consume, and pipe data through LiteHub using simple HTTP calls. No SDK needed — just <code>curl</code> or <code>fetch</code>.</p>
 </div>
-
-<footer>
-  LiteHub is open source · <a href="https://github.com/mimowen/litehub">GitHub</a> · MIT License
-</footer>
+<footer>LiteHub is open source · <a href="https://github.com/mimowen/litehub">GitHub</a> · MIT License</footer>
 </body></html>`);
 });
 
@@ -242,180 +134,92 @@ app.get("/", (c) => {
 
 app.get("/api/dashboard", async (c) => {
   const db = c.get("db");
-  const agents = await listAgents(db);
-  const queues = await listQueues(db);
-  const pools = await listPools(db);
-  const tasks = await listTasks(db, { limit: 20 });
-  const runs = await listRuns(db, { limit: 20 });
-
+  const data = await pageH.getDashboardData(db);
   return c.html(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LiteHub Dashboard</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; line-height: 1.6; }
-    .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
-    h1 { color: #4ade80; margin-bottom: 1rem; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin-top: 2rem; }
-    .card { background: #1e293b; border-radius: 12px; padding: 1.5rem; border: 1px solid #334155; }
-    .card h2 { color: #4ade80; margin-bottom: 0.75rem; font-size: 1.1rem; }
-    .status { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.875rem; background: #166534; color: #86efac; }
-    button { background: #22c55e; color: white; border: none; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.875rem; }
-    button:hover { background: #16a34a; }
-    input, textarea { width: 100%; padding: 0.5rem; border: 1px solid #334155; border-radius: 6px; background: #0f172a; color: #e2e8f0; margin-bottom: 0.5rem; }
-    .section { margin-top: 1.5rem; }
-    .section h3 { color: #94a3b8; margin-bottom: 0.5rem; font-size: 0.9rem; text-transform: uppercase; }
-    pre { background: #0f172a; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; }
-    .token-input { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-    .token-input input { flex: 1; margin-bottom: 0; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>🚀 LiteHub Dashboard</h1>
-    <div class="status">● Online</div>
-
-    <div class="token-input">
-      <input type="password" id="token" placeholder="Bearer Token (if required)">
-      <button onclick="saveToken()">Save</button>
-    </div>
-
-    <div class="grid">
-      <div class="card"><h2>🤖 Agents</h2><div id="agents">Loading...</div></div>
-      <div class="card"><h2>📨 Queues</h2><div id="queues">Loading...</div></div>
-      <div class="card"><h2>🏊 Pools</h2><div id="pools">Loading...</div></div>
-    </div>
-
-    <div class="grid">
-      <div class="card"><h2>📋 A2A Tasks</h2><div id="a2a-tasks">Loading...</div></div>
-      <div class="card"><h2>⚡ ACP Runs</h2><div id="acp-runs">Loading...</div></div>
-      <div class="card"><h2>🔍 ACP Agents</h2><div id="acp-agents">Loading...</div></div>
-    </div>
-
-    <div class="section">
-      <h3>Quick Test — Queue</h3>
-      <input type="text" id="testQueue" placeholder="Queue name" value="test">
-      <textarea id="testData" placeholder="Data to produce" rows="3">Hello from LiteHub!</textarea>
-      <button onclick="produce()">Produce</button>
-      <pre id="result"></pre>
-    </div>
-
-    <div class="section">
-      <h3>Quick Test — A2A Task</h3>
-      <input type="text" id="taskName" placeholder="Task name" value="test-task">
-      <input type="text" id="taskDesc" placeholder="Task description" value="A test task">
-      <input type="text" id="taskQueue" placeholder="Queue (optional)" value="">
-      <button onclick="createTask()">Create Task</button>
-      <pre id="task-result"></pre>
-    </div>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>LiteHub Dashboard</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;line-height:1.6}
+.container{max-width:1200px;margin:0 auto;padding:2rem}h1{color:#4ade80;margin-bottom:1rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1.5rem;margin-top:2rem}
+.card{background:#1e293b;border-radius:12px;padding:1.5rem;border:1px solid #334155}
+.card h2{color:#4ade80;margin-bottom:.75rem;font-size:1.1rem}
+.status{display:inline-flex;align-items:center;gap:.5rem;padding:.25rem .75rem;border-radius:9999px;font-size:.875rem;background:#166534;color:#86efac}
+button{background:#22c55e;color:#fff;border:none;padding:.5rem 1rem;border-radius:6px;cursor:pointer;font-size:.875rem}button:hover{background:#16a34a}
+input,textarea{width:100%;padding:.5rem;border:1px solid #334155;border-radius:6px;background:#0f172a;color:#e2e8f0;margin-bottom:.5rem}
+.section{margin-top:1.5rem}.section h3{color:#94a3b8;margin-bottom:.5rem;font-size:.9rem;text-transform:uppercase}
+pre{background:#0f172a;padding:1rem;border-radius:6px;overflow-x:auto;font-size:.8rem}
+.token-input{display:flex;gap:.5rem;margin-bottom:1rem}.token-input input{flex:1;margin-bottom:0}
+</style></head><body>
+<div class="container">
+  <h1>🚀 LiteHub Dashboard</h1><div class="status">● Online</div>
+  <div class="token-input"><input type="password" id="token" placeholder="Bearer Token (if required)"><button onclick="saveToken()">Save</button></div>
+  <div class="grid">
+    <div class="card"><h2>🤖 Agents</h2><div id="agents">Loading...</div></div>
+    <div class="card"><h2>📨 Queues</h2><div id="queues">Loading...</div></div>
+    <div class="card"><h2>🏊 Pools</h2><div id="pools">Loading...</div></div>
   </div>
-
-  <script>
-    function escapeHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
-
-    const token = localStorage.getItem('litehub_token') || '';
-    document.getElementById('token').value = token;
-
-    function saveToken() {
-      localStorage.setItem('litehub_token', document.getElementById('token').value);
-      alert('Token saved');
-    }
-
-    function headers() {
-      const h = { 'Content-Type': 'application/json' };
-      const t = localStorage.getItem('litehub_token');
-      if (t) h['Authorization'] = 'Bearer ' + t;
-      return h;
-    }
-
-    async function loadData() {
-      try {
-        const [agents, queues, pools, a2aTasks, acpRuns, acpAgents] = await Promise.all([
-          fetch('/api/agents', { headers: headers() }).then(r => r.json()).catch(() => ({})),
-          fetch('/api/queues', { headers: headers() }).then(r => r.json()).catch(() => ({})),
-          fetch('/api/pools', { headers: headers() }).then(r => r.json()).catch(() => ({})),
-          fetch('/api/a2a/tasks', { headers: headers() }).then(r => r.json()).catch(() => ({})),
-          fetch('/api/acp/runs', { headers: headers() }).then(r => r.json()).catch(() => ({})),
-          fetch('/api/acp/agents', { headers: headers() }).then(r => r.json()).catch(() => ({}))
-        ]);
-        document.getElementById('agents').innerHTML = agents.agents?.map(a => '<div>' + escapeHtml(a.name) + ' <span style="color:#94a3b8">(' + escapeHtml(a.role) + ')</span></div>').join('') || '<div style="color:#64748b">No agents</div>';
-        document.getElementById('queues').innerHTML = queues.queues?.map(q => '<div>' + escapeHtml(q.name) + ' <span style="color:#64748b">(' + q.size + ' msgs)</span></div>').join('') || '<div style="color:#64748b">No queues</div>';
-        document.getElementById('pools').innerHTML = pools.pools?.map(p => '<div>' + escapeHtml(p.name) + ' <span style="color:#64748b">(' + p.memberCount + '/' + p.maxMembers + ')</span></div>').join('') || '<div style="color:#64748b">No pools</div>';
-        document.getElementById('a2a-tasks').innerHTML = a2aTasks.tasks?.map(t => '<div>' + escapeHtml(t.name) + ' <span style="color:#f59e0b">[' + escapeHtml(t.status) + ']</span></div>').join('') || '<div style="color:#64748b">No tasks</div>';
-        document.getElementById('acp-runs').innerHTML = acpRuns.runs?.map(r => '<div>' + escapeHtml(r.name || r.runId) + ' <span style="color:#3b82f6">[' + escapeHtml(r.status || 'active') + ']</span></div>').join('') || '<div style="color:#64748b">No runs</div>';
-        document.getElementById('acp-agents').innerHTML = acpAgents.agents?.map(a => '<div>' + escapeHtml(a.agentId) + '</div>').join('') || '<div style="color:#64748b">No ACP agents</div>';
-      } catch (e) { console.error(e); }
-    }
-
-    async function produce() {
-      const queue = document.getElementById('testQueue').value;
-      const data = document.getElementById('testData').value;
-      const res = await fetch('/api/agent/produce', {
-        method: 'POST', headers: headers(),
-        body: JSON.stringify({ queue, agentId: 'dashboard', data })
-      });
-      const j = await res.json();
-      document.getElementById('result').textContent = JSON.stringify(j, null, 2);
-      loadData();
-    }
-
-    async function createTask() {
-      const name = document.getElementById('taskName').value;
-      const description = document.getElementById('taskDesc').value;
-      const queue = document.getElementById('taskQueue').value || undefined;
-      const res = await fetch('/api/a2a/tasks', {
-        method: 'POST', headers: headers(),
-        body: JSON.stringify({ name, description, queue })
-      });
-      const j = await res.json();
-      document.getElementById('task-result').textContent = JSON.stringify(j, null, 2);
-      loadData();
-    }
-
-    loadData();
-    setInterval(loadData, 5000);
-  </script>
-</body>
-</html>`);
+  <div class="grid">
+    <div class="card"><h2>📋 A2A Tasks</h2><div id="a2a-tasks">Loading...</div></div>
+    <div class="card"><h2>⚡ ACP Runs</h2><div id="acp-runs">Loading...</div></div>
+    <div class="card"><h2>🔍 ACP Agents</h2><div id="acp-agents">Loading...</div></div>
+  </div>
+  <div class="section"><h3>Quick Test — Queue</h3>
+    <input type="text" id="testQueue" placeholder="Queue name" value="test">
+    <textarea id="testData" placeholder="Data to produce" rows="3">Hello from LiteHub!</textarea>
+    <button onclick="produce()">Produce</button><pre id="result"></pre>
+  </div>
+  <div class="section"><h3>Quick Test — A2A Task</h3>
+    <input type="text" id="taskName" placeholder="Task name" value="test-task">
+    <input type="text" id="taskDesc" placeholder="Task description" value="A test task">
+    <button onclick="createTask()">Create Task</button><pre id="task-result"></pre>
+  </div>
+</div>
+<script>
+function escapeHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+const token=localStorage.getItem('litehub_token')||'';document.getElementById('token').value=token;
+function saveToken(){localStorage.setItem('litehub_token',document.getElementById('token').value);alert('Token saved')}
+function headers(){const h={'Content-Type':'application/json'};const t=localStorage.getItem('litehub_token');if(t)h['Authorization']='Bearer '+t;return h}
+async function loadData(){try{const[a,q,p,t,r,ag]=await Promise.all([fetch('/api/agents',{headers:headers()}).then(r=>r.json()).catch(()=>({})),fetch('/api/queues',{headers:headers()}).then(r=>r.json()).catch(()=>({})),fetch('/api/pools',{headers:headers()}).then(r=>r.json()).catch(()=>({})),fetch('/api/a2a/tasks',{headers:headers()}).then(r=>r.json()).catch(()=>({})),fetch('/api/acp/runs',{headers:headers()}).then(r=>r.json()).catch(()=>({})),fetch('/api/acp/agents',{headers:headers()}).then(r=>r.json()).catch(()=>({}))]);
+document.getElementById('agents').innerHTML=a.agents?.map(x=>'<div>'+escapeHtml(x.name)+' <span style="color:#94a3b8">('+escapeHtml(x.role)+')</span></div>').join('')||'<div style="color:#64748b">No agents</div>';
+document.getElementById('queues').innerHTML=q.queues?.map(x=>'<div>'+escapeHtml(x.name)+' <span style="color:#64748b">('+x.size+' msgs)</span></div>').join('')||'<div style="color:#64748b">No queues</div>';
+document.getElementById('pools').innerHTML=p.pools?.map(x=>'<div>'+escapeHtml(x.name)+' <span style="color:#64748b">('+x.memberCount+'/'+x.maxMembers+')</span></div>').join('')||'<div style="color:#64748b">No pools</div>';
+document.getElementById('a2a-tasks').innerHTML=t.tasks?.map(x=>'<div>'+escapeHtml(x.name)+' <span style="color:#f59e0b">['+escapeHtml(x.status)+']</span></div>').join('')||'<div style="color:#64748b">No tasks</div>';
+document.getElementById('acp-runs').innerHTML=r.runs?.map(x=>'<div>'+escapeHtml(x.name||x.runId)+' <span style="color:#3b82f6">['+escapeHtml(x.status||'active')+']</span></div>').join('')||'<div style="color:#64748b">No runs</div>';
+document.getElementById('acp-agents').innerHTML=ag.agents?.map(x=>'<div>'+escapeHtml(x.agentId)+'</div>').join('')||'<div style="color:#64748b">No ACP agents</div>';
+}catch(e){console.error(e)}}
+async function produce(){const q=document.getElementById('testQueue').value;const d=document.getElementById('testData').value;const r=await fetch('/api/agent/produce',{method:'POST',headers:headers(),body:JSON.stringify({queue:q,agentId:'dashboard',data:d})});document.getElementById('result').textContent=JSON.stringify(await r.json(),null,2);loadData()}
+async function createTask(){const n=document.getElementById('taskName').value;const d=document.getElementById('taskDesc').value;const r=await fetch('/api/a2a/tasks',{method:'POST',headers:headers(),body:JSON.stringify({name:n,description:d})});document.getElementById('task-result').textContent=JSON.stringify(await r.json(),null,2);loadData()}
+loadData();setInterval(loadData,5000);
+</script></body></html>`);
 });
 
-// ─── Skill download (Edge-compatible) ───────────────────────────────────
+// ─── Skill download ──────────────────────────────────────────────────────
 
 app.get("/api/skill", async (c) => {
-  try {
-    const { readFileSync } = await import("fs");
-    const { join } = await import("path");
-    const content = readFileSync(join(process.cwd(), "skills", "litehub.md"), "utf-8");
-    c.header("Content-Type", "text/markdown; charset=utf-8");
-    c.header("Content-Disposition", 'attachment; filename="litehub.md"');
-    return c.body(content);
-  } catch {
-    return c.text("Skill file not found", 404);
-  }
+  const result = await pageH.handleSkillDownload();
+  if (!result) return c.text("Skill file not found", 404);
+  c.header("Content-Type", result.contentType);
+  c.header("Content-Disposition", 'attachment; filename="litehub.md"');
+  return c.body(result.content);
 });
 
 app.get("/api/skills", (c) => {
-  return c.json({
-    ok: true,
-    skills: [{ name: "litehub", file: "litehub.md", description: "LiteHub AI Agent 协作技能" }],
-  });
+  return c.json(ok({ skills: [{ name: "litehub", file: "litehub.md", description: "LiteHub AI Agent 协作技能" }] }));
 });
 
-// ─── MCP Discovery (Edge-safe) ───────────────────────────────────────────
+// ─── MCP Discovery ───────────────────────────────────────────────────────
 
-app.get("/api/mcp", (c) => {
-  const baseUrl = getBaseUrl(c);
-  const config = buildMcpDiscoveryConfig(baseUrl);
+app.get("/api/mcp", async (c) => {
+  const config = await pageH.handleMcpDiscovery(getBaseUrl(c));
   c.header("Content-Type", "application/json");
   c.header("Content-Disposition", 'attachment; filename="litehub-mcp.json"');
   return c.json(config);
 });
 
-// ─── MCP SSE/Streamable endpoints (graceful fallback for Edge) ───────────
-const mcpNotAvailable = (c: any) => c.json({ ok: false, error: "MCP protocol requires Node.js runtime. Deploy with Node.js adapter for MCP support." }, 501);
+// ─── MCP endpoints (graceful fallback for Edge) ──────────────────────────
+
+const mcpNotAvailable = (c: any) => c.json(fail("MCP protocol requires Node.js runtime.", 501), 501);
 app.get("/mcp", mcpNotAvailable);
 app.post("/mcp", mcpNotAvailable);
 app.delete("/mcp", mcpNotAvailable);
@@ -424,270 +228,110 @@ app.all("/api/mcp/sse", mcpNotAvailable);
 // ─── API Root ────────────────────────────────────────────────────────────
 
 app.get("/api", (c) => {
-  return c.json({
-    ok: true,
-    name: "LiteHub",
-    version: "2.0.0",
-    endpoints: {
-      agents: "/api/agents",
-      queues: "/api/queues",
-      pools: "/api/pools",
-      dashboard: "/api/dashboard",
-      skill: "/api/skill",
-      mcp: "/api/mcp",
-    },
-  });
+  return c.json(ok({
+    name: "LiteHub", version: "2.0.0",
+    endpoints: { agents: "/api/agents", queues: "/api/queues", pools: "/api/pools", dashboard: "/api/dashboard", skill: "/api/skill", mcp: "/api/mcp" },
+  }));
 });
 
 // ─── Agent API ───────────────────────────────────────────────────────────
 
 app.post("/api/agent/register", async (c) => {
-  try {
-    const db = c.get("db");
-    const body = await c.req.json();
-    const { agentId, name, role, queues, pools, pollInterval } = body;
-    if (!agentId || !name || !role) {
-      return c.json({ ok: false, error: "缺少必填字段: agentId, name, role" }, 400);
-    }
-    const queueInput: string[] = queues || [];
-    const poolInput = pools || [];
-    const result = await registerAgent(
-      db,
-      { agentId, name, role, queues: queueInput, pollInterval },
-      Object.fromEntries(
-        queueInput.map((q: any) => [typeof q === "string" ? q : q.name, typeof q === "string" ? "" : q.description || ""]),
-      ),
-      Object.fromEntries(
-        poolInput.map((p: any) => [typeof p === "string" ? p : p.name, { description: typeof p === "string" ? "" : p.description || "", maxMembers: typeof p === "string" ? undefined : p.maxMembers }]),
-      ),
-    );
-    return c.json({ ok: true, agent: result.agent, createdQueues: result.createdQueues, createdPools: result.createdPools });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message || "Registration failed" }, 500);
-  }
+  try { return send(c, await agentH.handleRegister(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
-
-app.get("/api/agents", async (c) => {
-  try {
-    const db = c.get("db");
-    return c.json({ ok: true, agents: await listAgents(db) });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-// ─── Produce / Consume / Pipe ────────────────────────────────────────────
 
 app.post("/api/agent/produce", async (c) => {
-  try {
-    const db = c.get("db");
-    const body = await c.req.json();
-    const { agentId, queue, data, contentType, metadata } = body;
-    if (!agentId || !queue || data === undefined) {
-      return c.json({ ok: false, error: "缺少必填字段: agentId, queue, data" }, 400);
-    }
-    if (!(await ensureAgent(db, agentId))) {
-      return c.json({ ok: false, error: "Agent not registered. Call register first." }, 403);
-    }
-    if (!(await queueExists(db, queue))) {
-      return c.json({ ok: false, error: "Queue not found. Create it during registration first." }, 404);
-    }
-    const pointer = await produce(db, queue, String(data), agentId, { contentType, metadata });
-    return c.json({ ok: true, pointer });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message || "Produce failed" }, 500);
-  }
+  try { return send(c, await queueH.handleProduce(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.post("/api/agent/consume", async (c) => {
-  try {
-    const db = c.get("db");
-    const body = await c.req.json();
-    const { agentId, queue, maxItems, loopDetection } = body;
-    if (!agentId || !queue) {
-      return c.json({ ok: false, error: "缺少必填字段: agentId, queue" }, 400);
-    }
-    if (!(await ensureAgent(db, agentId))) {
-      return c.json({ ok: false, error: "Agent not registered. Call register first." }, 403);
-    }
-    if (!(await queueExists(db, queue))) {
-      return c.json({ ok: false, error: "Queue not found." }, 404);
-    }
-    const items = await consume(db, queue, agentId, maxItems || 1, { loopDetection });
-    return c.json({ ok: true, items });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message || "Consume failed" }, 500);
-  }
+  try { return send(c, await queueH.handleConsume(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.post("/api/agent/pipe", async (c) => {
-  try {
-    const db = c.get("db");
-    const body = await c.req.json();
-    const { agentId, sourceQueue, targetQueue, data, contentType, metadata } = body;
-    if (!agentId || !sourceQueue || !targetQueue || data === undefined) {
-      return c.json({ ok: false, error: "缺少必填字段: agentId, sourceQueue, targetQueue, data" }, 400);
-    }
-    if (!(await ensureAgent(db, agentId))) {
-      return c.json({ ok: false, error: "Agent not registered. Call register first." }, 403);
-    }
-    if (!(await queueExists(db, sourceQueue))) {
-      return c.json({ ok: false, error: "Source queue not found." }, 404);
-    }
-    const consumed = await consume(db, sourceQueue, agentId, 1, { loopDetection: false });
-    if (!consumed || consumed.length === 0) {
-      return c.json({ ok: false, error: "源队列无数据" }, 404);
-    }
-    const input = consumed[0];
-    await ensureQueue(db, targetQueue, undefined, agentId);
-    const output = await produce(db, targetQueue, String(data), agentId, {
-      contentType,
-      metadata,
-      lineage: input.pointer.lineage,
-    });
-    return c.json({ ok: true, input, output });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message || "Pipe failed" }, 500);
-  }
+  try { return send(c, await queueH.handlePipe(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
-// ─── Queue API ───────────────────────────────────────────────────────────
+app.get("/api/agents", async (c) => {
+  try { return send(c, await agentH.handleListAgents(c.get("db"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+app.get("/api/agents/:id", async (c) => {
+  try { return send(c, await agentH.handleGetAgent(c.get("db"), c.req.param("id"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
 
 app.get("/api/queues", async (c) => {
-  try {
-    const db = c.get("db");
-    return c.json({ ok: true, queues: await listQueues(db) });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await queueH.handleListQueues(c.get("db"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+app.get("/api/queues/:name", async (c) => {
+  try { return send(c, await queueH.handleQueueStatus(c.get("db"), c.req.param("name"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/peek", async (c) => {
-  try {
-    const db = c.get("db");
-    const queue = c.req.query("queue");
-    if (!queue) return c.json({ ok: false, error: "缺少 query: queue" }, 400);
-    if (!(await queueExists(db, queue))) {
-      return c.json({ ok: false, error: "Queue not found." }, 404);
-    }
-    const pointer = await peek(db, queue);
-    if (!pointer) return c.json({ ok: false, error: "队列为空或不存在" }, 404);
-    return c.json({ ok: true, pointer });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await queueH.handlePeek(c.get("db"), c.req.query("queue") || "")); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 // ─── Pool API ────────────────────────────────────────────────────────────
 
 app.post("/api/pool/create", async (c) => {
-  try {
-    const db = c.get("db");
-    const body = await c.req.json();
-    const { name, description, guidelines, maxMembers } = body;
-    if (!name) return c.json({ ok: false, error: "缺少必填字段: name" }, 400);
-    const pool = await createPool(db, name, description, guidelines, maxMembers);
-    return c.json({ ok: true, pool });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message || "Pool 已存在" }, 400);
-  }
+  try { return send(c, await poolH.handlePoolCreate(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/pools", async (c) => {
-  try {
-    const db = c.get("db");
-    return c.json({ ok: true, pools: await listPools(db) });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await poolH.handleListPools(c.get("db"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/pool/members", async (c) => {
-  try {
-    const db = c.get("db");
-    const pool = c.req.query("pool");
-    if (!pool) return c.json({ ok: false, error: "缺少 query: pool" }, 400);
-    return c.json({ ok: true, members: await listMembers(db, pool) });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await poolH.handlePoolMembers(c.get("db"), c.req.query("pool") || "")); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/pool/messages", async (c) => {
   try {
-    const db = c.get("db");
-    const pool = c.req.query("pool");
-    const since = c.req.query("since");
-    const tag = c.req.query("tag");
+    const pool = c.req.query("pool") || "";
     const limit = c.req.query("limit");
-    if (!pool) return c.json({ ok: false, error: "缺少 query: pool" }, 400);
-    const result = await getMessages(db, pool, { since, tag, limit: limit ? parseInt(limit) : undefined });
-    return c.json({ ok: true, messages: result.messages, guidelines: result.guidelines });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+    return send(c, await poolH.handlePoolMessages(c.get("db"), pool, { since: c.req.query("since"), tag: c.req.query("tag"), limit: limit ? parseInt(limit) : undefined }));
+  } catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/pool/:name", async (c) => {
-  try {
-    const db = c.get("db");
-    const name = c.req.param("name");
-    const pool = await getPool(db, name);
-    if (!pool) return c.json({ ok: false, error: "Pool 不存在" }, 404);
-    return c.json({ ok: true, pool });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await poolH.handleGetPool(c.get("db"), c.req.param("name"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.post("/api/pool/join", async (c) => {
-  try {
-    const db = c.get("db");
-    const body = await c.req.json();
-    const { pool, agentId } = body;
-    if (!pool || !agentId) return c.json({ ok: false, error: "缺少必填字段: pool, agentId" }, 400);
-    const result = await joinPool(db, pool, agentId);
-    if (!result.ok) return c.json(result, 400);
-    return c.json(result);
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await poolH.handlePoolJoin(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.post("/api/pool/leave", async (c) => {
-  try {
-    const db = c.get("db");
-    const body = await c.req.json();
-    const { pool, agentId } = body;
-    if (!pool || !agentId) return c.json({ ok: false, error: "缺少必填字段: pool, agentId" }, 400);
-    await leavePool(db, pool, agentId);
-    return c.json({ ok: true });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await poolH.handlePoolLeave(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.post("/api/pool/speak", async (c) => {
-  try {
-    const db = c.get("db");
-    const body = await c.req.json();
-    const { pool, agentId, content, replyTo, tags, metadata } = body;
-    if (!pool || !agentId || !content) return c.json({ ok: false, error: "缺少必填字段: pool, agentId, content" }, 400);
-    const msg = await speak(db, pool, agentId, content, { replyTo, tags, metadata });
-    if ("error" in msg) return c.json({ ok: false, error: msg.error }, 403);
-    return c.json({ ok: true, message: msg });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await poolH.handlePoolSpeak(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
-// ─── A2A Protocol Routes ─────────────────────────────────────────────────
+// ─── Agent Card ──────────────────────────────────────────────────────────
 
 app.get("/.well-known/agent-card.json", (c) => {
   const baseUrl = getBaseUrl(c);
   return c.json({
-    name: "LiteHub",
-    version: "2.0.0",
+    name: "LiteHub", version: "2.0.0",
     description: "Distributed Agent Collaboration Hub — Queue + Pool messaging",
     capabilities: {
       queue: { produce: `${baseUrl}/api/agent/produce`, consume: `${baseUrl}/api/agent/consume`, peek: `${baseUrl}/api/peek` },
@@ -700,413 +344,164 @@ app.get("/.well-known/agent-card.json", (c) => {
   });
 });
 
-app.get("/api/a2a/tasks", async (c) => {
-  try {
-    const db = c.get("db");
-    return c.json({ ok: true, tasks: await listTasks(db) });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-app.post("/api/a2a/tasks", async (c) => {
-  try {
-    const db = c.get("db");
-    const b = await c.req.json();
-    const { agentId, targetAgentId, name, input, taskId } = b;
-    if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
-    const result = await createTask(db, { agentId, targetAgentId, name, input, taskId });
-    if (!result.ok) return c.json(result, 403);
-    return c.json(result);
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-app.get("/api/a2a/tasks/pushNotificationConfig", async (c) => {
-  try {
-    const db = c.get("db");
-    const agentId = c.req.query("agentId");
-    if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
-    const result = await getPushNotification(db, agentId);
-    return c.json({ ok: true, subscriptions: result });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-app.get("/api/a2a/tasks/:id", async (c) => {
-  try {
-    const db = c.get("db");
-    const task = await getTask(db, c.req.param("id"));
-    if (!task) return c.json({ ok: false, error: "Task not found" }, 404);
-    return c.json({ ok: true, task });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-app.post("/api/a2a/tasks/cancel", async (c) => {
-  try {
-    const db = c.get("db");
-    const b = await c.req.json();
-    if (!b.agentId || !b.taskId) return c.json({ ok: false, error: "Missing agentId or taskId" }, 400);
-    const result = await cancelTask(db, b.taskId, b.agentId);
-    return c.json(result);
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-app.post("/api/a2a/tasks/pushNotificationConfig/set", async (c) => {
-  try {
-    const db = c.get("db");
-    const b = await c.req.json();
-    if (!b.agentId || !b.webhookUrl) return c.json({ ok: false, error: "Missing agentId or webhookUrl" }, 400);
-    const result = await setPushNotification(db, { agentId: b.agentId, webhookUrl: b.webhookUrl, taskId: b.taskId, secret: b.secret });
-    return c.json(result);
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-app.post("/api/a2a/tasks/update", async (c) => {
-  try {
-    const db = c.get("db");
-    const b = await c.req.json();
-    if (!b.taskId || !b.agentId || !b.status) return c.json({ ok: false, error: "Missing taskId, agentId, or status" }, 400);
-    const result = await updateTask(db, b.taskId, b.agentId, b.status);
-    if (!result.ok) return c.json(result, 400);
-    return c.json(result);
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-app.post("/api/a2a/tasks/:id/send", async (c) => {
-  try {
-    const db = c.get("db");
-    const taskId = c.req.param("id");
-    const b = await c.req.json();
-    const { agentId, message, messageId, metadata } = b;
-    if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
-    const result = await sendToTask(db, { taskId, agentId, message, messageId, metadata });
-    if (!result.ok) return c.json(result, 400);
-    return c.json(result);
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-app.get("/api/a2a/tasks/:id/subscribe", async (c) => {
-  try {
-    const db = c.get("db");
-    const taskId = c.req.param("id");
-    const { stream, close } = createTaskSubscription(db, taskId);
-    c.req.raw.signal.addEventListener("abort", close);
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-      },
-    });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-// ─── Webhook Test Endpoint ───────────────────────────────────────────────
-
-app.post("/api/webhook/test", async (c) => {
-  try {
-    const db = c.get("db");
-    const payload = await c.req.json().catch(() => ({}));
-    await logWebhook(db, JSON.stringify(payload), JSON.stringify(c.req.header()));
-    return c.json({ ok: true, received: true });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-app.get("/api/webhook/test", async (c) => {
-  try {
-    const db = c.get("db");
-    const logs = await getWebhookLogs(db, 20);
-    return c.json({ ok: true, logs });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
-// ─── A2A Protocol Standard Endpoint (JSON-RPC 2.0) ──────────────────────────
+// ─── A2A Standard Protocol (JSON-RPC 2.0) ────────────────────────────────
 
 app.post("/a2a", async (c) => {
   try {
     const db = c.get("db");
     const body = await c.req.json();
     const agentId = c.req.header("x-agent-id") || "default-agent";
-    const baseUrl = getBaseUrl(c);
-    const response = await handleA2ARequest(db, body, agentId, baseUrl);
-    return c.json(response);
-  } catch (err: any) {
-    return c.json({ jsonrpc: "2.0", error: { code: -32603, message: err.message }, id: null }, 500);
+    return c.json(await handleA2ARequest(db, body, agentId, getBaseUrl(c)));
+  } catch (e: any) {
+    return c.json({ jsonrpc: "2.0", error: { code: -32603, message: e.message }, id: null }, 500);
   }
 });
 
 app.get("/a2a/stream", async (c) => {
   try {
-    const db = c.get("db");
     const taskId = c.req.query("taskId");
-    if (!taskId) return c.json({ error: "Missing taskId" }, 400);
-    const stream = handleA2AStream(db, taskId);
-    if (!stream) return c.json({ error: "Task not found" }, 404);
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-      },
-    });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
+    if (!taskId) return c.json(fail("Missing taskId", 400), 400);
+    const stream = handleA2AStream(c.get("db"), taskId);
+    if (!stream) return c.json(fail("Task not found", 404), 404);
+    return new Response(stream, { headers: sseHeaders() });
+  } catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
-// ─── A2A Protocol Routes (Legacy API) ─────────────────────────────────────
+// ─── A2A Legacy API ──────────────────────────────────────────────────────
 
 app.get("/api/a2a/tasks", async (c) => {
+  try { return send(c, await a2aH.handleA2AListTasks(c.get("db"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+app.post("/api/a2a/tasks", async (c) => {
+  try { return send(c, await a2aH.handleA2ACreateTask(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+app.get("/api/a2a/tasks/pushNotificationConfig", async (c) => {
+  try { return send(c, await a2aH.handleA2AGetPushNotification(c.get("db"), c.req.query("agentId") || "")); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+app.get("/api/a2a/tasks/:id", async (c) => {
+  try { return send(c, await a2aH.handleA2AGetTask(c.get("db"), c.req.param("id"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+app.post("/api/a2a/tasks/cancel", async (c) => {
+  try { return send(c, await a2aH.handleA2ACancelTask(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+app.post("/api/a2a/tasks/pushNotificationConfig/set", async (c) => {
+  try { return send(c, await a2aH.handleA2ASetPushNotification(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+app.post("/api/a2a/tasks/update", async (c) => {
+  try { return send(c, await a2aH.handleA2AUpdateTask(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+app.post("/api/a2a/tasks/:id/send", async (c) => {
+  try { return send(c, await a2aH.handleA2ASendToTask(c.get("db"), c.req.param("id"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+app.get("/api/a2a/tasks/:id/subscribe", async (c) => {
   try {
-    const db = c.get("db");
-    return c.json({ ok: true, tasks: await listTasks(db) });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+    const result = await a2aH.handleA2ASubscribe(c.get("db"), c.req.param("id"));
+    c.req.raw.signal.addEventListener("abort", result.close);
+    return new Response(result.stream, { headers: result.headers });
+  } catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+// ─── Webhook ─────────────────────────────────────────────────────────────
+
+app.post("/api/webhook/test", async (c) => {
+  try {
+    const payload = await c.req.json().catch(() => ({}));
+    return send(c, await webhookH.handleWebhookTest(c.get("db"), payload, c.req.header()));
+  } catch (e: any) { return c.json(fail(e.message, 500), 500); }
+});
+
+app.get("/api/webhook/test", async (c) => {
+  try { return send(c, await webhookH.handleWebhookLogs(c.get("db"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 // ─── ACP Protocol Routes ─────────────────────────────────────────────────
 
 app.get("/api/acp/runs", async (c) => {
-  try {
-    const db = c.get("db");
-    return c.json({ ok: true, runs: await listRuns(db) });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPListRuns(c.get("db"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.post("/api/acp/runs", async (c) => {
-  try {
-    const db = c.get("db");
-    const b = await c.req.json();
-    const { agentId, runId, name } = b;
-    if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
-    const result = await createRun(db, { agentId, runId, name });
-    if (!result.ok) return c.json(result, 403);
-    return c.json(result);
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPCreateRun(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/acp/runs/:id/stream", async (c) => {
   try {
-    const db = c.get("db");
-    const runId = c.req.param("id");
-    const run = await getRun(db, runId);
-    if (!run) return c.json({ ok: false, error: "Run not found" }, 404);
-
-    const poolName = `acp:${runId}`;
-    const stream = new ReadableStream({
-      start(controller) {
-        const encoder = new TextEncoder();
-        let lastCount = 0;
-        let closed = false;
-
-        (async () => {
-          const { messages: msgs } = await getMessages(db, poolName, { limit: 100 });
-          lastCount = msgs.length;
-          const initData = { type: 'init', runId, messageCount: lastCount, messages: msgs };
-          controller.enqueue(encoder.encode(`event: init\ndata: ${JSON.stringify(initData)}\n\n`));
-        })();
-
-        const interval = setInterval(async () => {
-          if (closed) { clearInterval(interval); return; }
-          try {
-            const { messages: current } = await getMessages(db, poolName, { limit: 100 });
-            if (current.length > lastCount) {
-              const newMsgs = current.slice(lastCount);
-              controller.enqueue(encoder.encode(`event: messages\ndata: ${JSON.stringify({ type: 'messages', runId, newMessages: newMsgs })}\n\n`));
-              lastCount = current.length;
-            }
-            controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
-          } catch {}
-        }, 2000);
-
-        c.req.raw.signal.addEventListener('abort', () => {
-          closed = true;
-          clearInterval(interval);
-          try { controller.close(); } catch {}
-        });
-
-        setTimeout(() => {
-          closed = true;
-          clearInterval(interval);
-          try {
-            controller.enqueue(encoder.encode(`event: close\ndata: {"type":"timeout"}\n\n`));
-            controller.close();
-          } catch {}
-        }, 5 * 60 * 1000);
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      },
-    });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+    const result = await acpH.handleACPRunStream(c.get("db"), c.req.param("id"), c.req.raw.signal);
+    if (!result) return c.json(fail("Run not found", 404), 404);
+    return new Response(result.stream, { headers: result.headers });
+  } catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/acp/runs/:id", async (c) => {
-  try {
-    const db = c.get("db");
-    const runId = c.req.param("id");
-    const run = await getRun(db, runId);
-    if (!run) return c.json({ ok: false, error: "Run not found" }, 404);
-    return c.json({ ok: true, runId, run });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPGetRun(c.get("db"), c.req.param("id"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.post("/api/acp/runs/cancel", async (c) => {
-  try {
-    const db = c.get("db");
-    const b = await c.req.json();
-    if (!b.agentId || !b.runId) return c.json({ ok: false, error: "Missing agentId or runId" }, 400);
-    const result = await cancelRun(db, b.runId, b.agentId);
-    return c.json(result);
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPCancelRun(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/acp/contexts", async (c) => {
-  try {
-    const db = c.get("db");
-    return c.json({ ok: true, contexts: await listContexts(db) });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPListContexts(c.get("db"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.post("/api/acp/contexts", async (c) => {
-  try {
-    const db = c.get("db");
-    const b = await c.req.json();
-    const { agentId, contextId, name, guidelines } = b;
-    if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
-    const result = await createContext(db, { agentId, contextId, name, guidelines });
-    if (!result.ok) return c.json(result, 403);
-    return c.json(result);
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPCreateContext(c.get("db"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/acp/contexts/:id", async (c) => {
-  try {
-    const db = c.get("db");
-    const contextId = c.req.param("id");
-    const context = await getContext(db, contextId);
-    if (!context) return c.json({ ok: false, error: "Context not found" }, 404);
-    return c.json({ ok: true, contextId, context });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPGetContext(c.get("db"), c.req.param("id"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/acp/contexts/:id/messages", async (c) => {
-  try {
-    const db = c.get("db");
-    const contextId = c.req.param("id");
-    const result = await getContextMessages(db, contextId);
-    return c.json({ ok: true, contextId, messages: result.messages });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPContextMessages(c.get("db"), c.req.param("id"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.post("/api/acp/contexts/:id/join", async (c) => {
-  try {
-    const db = c.get("db");
-    const contextId = c.req.param("id");
-    const b = await c.req.json();
-    const { agentId } = b;
-    if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
-    const result = await joinContext(db, contextId, agentId);
-    if (!result.ok) return c.json(result, 400);
-    return c.json({ ok: true, contextId, agentId });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPJoinContext(c.get("db"), c.req.param("id"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.post("/api/acp/contexts/:id/leave", async (c) => {
-  try {
-    const db = c.get("db");
-    const contextId = c.req.param("id");
-    const b = await c.req.json();
-    const { agentId } = b;
-    if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
-    const result = await leaveContext(db, contextId, agentId);
-    if (!result.ok) return c.json(result, 400);
-    return c.json({ ok: true, contextId, agentId });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPLeaveContext(c.get("db"), c.req.param("id"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.post("/api/acp/contexts/:id/speak", async (c) => {
-  try {
-    const db = c.get("db");
-    const contextId = c.req.param("id");
-    const b = await c.req.json();
-    const { agentId, content, replyTo, tags, metadata } = b;
-    if (!agentId || !content) return c.json({ ok: false, error: "Missing agentId or content" }, 400);
-    const result = await speakContext(db, contextId, agentId, content, { replyTo, tags, metadata });
-    if (!result.ok) return c.json({ ok: false, error: result.error }, 403);
-    return c.json({ ok: true, contextId, id: result.id });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPSpeakContext(c.get("db"), c.req.param("id"), await c.req.json())); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/acp/agents", async (c) => {
-  try {
-    const db = c.get("db");
-    return c.json({ ok: true, agents: await listAgents(db) });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPListAgents(c.get("db"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
 
 app.get("/api/acp/agents/:agentId", async (c) => {
-  try {
-    const db = c.get("db");
-    const agentId = c.req.param("agentId");
-    const agent = await getACPAgent(db, agentId);
-    if (!agent) return c.json({ ok: false, error: "Agent not found" }, 404);
-    return c.json({ ok: true, agent });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
+  try { return send(c, await acpH.handleACPGetAgent(c.get("db"), c.req.param("agentId"))); }
+  catch (e: any) { return c.json(fail(e.message, 500), 500); }
 });
