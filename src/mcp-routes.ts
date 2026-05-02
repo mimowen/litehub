@@ -4,10 +4,17 @@ import type { LiteHubEnv } from "./types.js";
 import { MCP_TOOLS } from "./mcp/tools.js";
 import { handleStreamableHTTP, handleSSE } from "./mcp-handler.js";
 
+// Utility to get base URL from request headers (consistent with index.ts)
+function getBaseUrl(c: any): string {
+  const host = c.req.header("host") || "localhost:3000";
+  const proto = c.req.header("x-forwarded-proto") || "http";
+  return `${proto}://${host}`;
+}
+
 export function mountMCPRoutes(app: Hono<LiteHubEnv>) {
 
   app.get("/api/mcp", (c) => {
-    const baseUrl = new URL(c.req.url).origin;
+    const baseUrl = getBaseUrl(c);
     const config = {
       mcpServers: {
         litehub: {
