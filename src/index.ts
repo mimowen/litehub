@@ -19,6 +19,7 @@ import {
 import {
   createTask, getTask, listTasks, cancelTask, updateTask,
   setPushNotification, getPushNotification,
+  sendToTask, createTaskSubscription,
 } from "./core/a2a.js";
 import {
   createRun, getRun, listRuns, cancelRun,
@@ -27,13 +28,9 @@ import {
   getContextMessages, getACPAgent,
 } from "./core/acp.js";
 import { logWebhook, getWebhookLogs } from "./core/webhook.js";
-
-// ─── Utility: get base URL ───────────────────────────────────────────────
-function getBaseUrl(c: any): string {
-  const host = c.req.header("host") || "localhost:3000";
-  const proto = c.req.header("x-forwarded-proto") || "http";
-  return `${proto}://${host}`;
-}
+import { getBaseUrl, buildMcpDiscoveryConfig } from "./utils.js";
+import { handleA2ARequest, handleA2AStream } from "./protocols/a2a.js";
+import * as acp from "./protocols/acp.js";
 
 // ─── App setup ───────────────────────────────────────────────────────────
 const app = new Hono<LiteHubEnv>();
@@ -250,7 +247,6 @@ app.get("/api/dashboard", async (c) => {
   const pools = await listPools(db);
   const tasks = await listTasks(db, { limit: 20 });
   const runs = await listRuns(db, { limit: 20 });
-  const acpAgents = await listAgents(db);
 
   return c.html(`<!DOCTYPE html>
 <html lang="en">
@@ -410,58 +406,16 @@ app.get("/api/skills", (c) => {
 
 // ─── MCP Discovery (Edge-safe) ───────────────────────────────────────────
 
-import { MCP_TOOLS } from "./mcp/tools.js";
-
 app.get("/api/mcp", (c) => {
   const baseUrl = getBaseUrl(c);
-  const config = {
-    mcpServers: {
-      litehub: {
-        url: `${baseUrl}/api/mcp/sse`,
-        transport: "sse",
-        description: "LiteHub — 轻量级 Agent 协作管道 (支持 SSE 和 Streamable HTTP)",
-      },
-    },
-    tools: MCP_TOOLS.map(t => ({ name: t.name, description: t.description })),
-    endpoints: {
-      register: "POST /api/agent/register",
-      produce: "POST /api/agent/produce",
-      consume: "POST /api/agent/consume",
-      pipe: "POST /api/agent/pipe",
-      peek: "GET /api/peek?queue=",
-      poolCreate: "POST /api/pool/create",
-      poolJoin: "POST /api/pool/join",
-      poolSpeak: "POST /api/pool/speak",
-      poolMessages: "GET /api/pool/messages",
-      agents: "GET /api/agents",
-      queues: "GET /api/queues",
-      pools: "GET /api/pools",
-      a2aTasks: "GET /api/a2a/tasks",
-      a2aTaskCreate: "POST /api/a2a/tasks",
-      a2aTaskUpdate: "POST /api/a2a/tasks/update",
-      a2aPushNotification: "POST /api/a2a/tasks/pushNotificationConfig/set",
-      acpRuns: "GET /api/acp/runs",
-      acpRunCreate: "POST /api/acp/runs",
-      acpContexts: "GET /api/acp/contexts",
-      acpContextCreate: "POST /api/acp/contexts",
-      mcpSSE: "GET|POST /api/mcp/sse",
-    },
-    auth: {
-      type: "bearer",
-      description: "设置环境变量 LITEHUB_TOKEN 后，请求需携带 Authorization: Bearer <token>",
-    },
-    transports: {
-      sse: "Server-Sent Events (传统方式，适合短连接)",
-      streamableHttp: "Streamable HTTP (推荐，更高效，Vercel 官方推荐)",
-    },
-  };
+  const config = buildMcpDiscoveryConfig(baseUrl);
   c.header("Content-Type", "application/json");
   c.header("Content-Disposition", 'attachment; filename="litehub-mcp.json"');
   return c.json(config);
 });
 
 // ─── MCP SSE/Streamable endpoints (graceful fallback for Edge) ───────────
-const mcpNotAvailable = (c: any) => c.json({ ok: false, error: "MCP protocol requires Node.js runtime. Use localhost:3000 for MCP support" }, 501);
+const mcpNotAvailable = (c: any) => c.json({ ok: false, error: "MCP protocol requires Node.js runtime. Deploy with Node.js adapter for MCP support." }, 501);
 app.get("/mcp", mcpNotAvailable);
 app.post("/mcp", mcpNotAvailable);
 app.delete("/mcp", mcpNotAvailable);
@@ -829,6 +783,40 @@ app.post("/api/a2a/tasks/update", async (c) => {
   }
 });
 
+app.post("/api/a2a/tasks/:id/send", async (c) => {
+  try {
+    const db = c.get("db");
+    const taskId = c.req.param("id");
+    const b = await c.req.json();
+    const { agentId, message, messageId, metadata } = b;
+    if (!agentId) return c.json({ ok: false, error: "Missing agentId" }, 400);
+    const result = await sendToTask(db, { taskId, agentId, message, messageId, metadata });
+    if (!result.ok) return c.json(result, 400);
+    return c.json(result);
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+app.get("/api/a2a/tasks/:id/subscribe", async (c) => {
+  try {
+    const db = c.get("db");
+    const taskId = c.req.param("id");
+    const { stream, close } = createTaskSubscription(db, taskId);
+    c.req.raw.signal.addEventListener("abort", close);
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
 // ─── Webhook Test Endpoint ───────────────────────────────────────────────
 
 app.post("/api/webhook/test", async (c) => {
@@ -847,6 +835,52 @@ app.get("/api/webhook/test", async (c) => {
     const db = c.get("db");
     const logs = await getWebhookLogs(db, 20);
     return c.json({ ok: true, logs });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+// ─── A2A Protocol Standard Endpoint (JSON-RPC 2.0) ──────────────────────────
+
+app.post("/a2a", async (c) => {
+  try {
+    const db = c.get("db");
+    const body = await c.req.json();
+    const agentId = c.req.header("x-agent-id") || "default-agent";
+    const baseUrl = getBaseUrl(c);
+    const response = await handleA2ARequest(db, body, agentId, baseUrl);
+    return c.json(response);
+  } catch (err: any) {
+    return c.json({ jsonrpc: "2.0", error: { code: -32603, message: err.message }, id: null }, 500);
+  }
+});
+
+app.get("/a2a/stream", async (c) => {
+  try {
+    const db = c.get("db");
+    const taskId = c.req.query("taskId");
+    if (!taskId) return c.json({ error: "Missing taskId" }, 400);
+    const stream = handleA2AStream(db, taskId);
+    if (!stream) return c.json({ error: "Task not found" }, 404);
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ─── A2A Protocol Routes (Legacy API) ─────────────────────────────────────
+
+app.get("/api/a2a/tasks", async (c) => {
+  try {
+    const db = c.get("db");
+    return c.json({ ok: true, tasks: await listTasks(db) });
   } catch (err: any) {
     return c.json({ ok: false, error: err.message }, 500);
   }

@@ -2,7 +2,6 @@
 // 使用官方 @modelcontextprotocol/sdk，所有 tool callback 通过闭包获取 DbClient
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { z } from "zod";
 import type { Context } from "hono";
 import type { DbClient } from "./adapters/db/interface.js";
@@ -13,7 +12,6 @@ import * as acp from "./core/acp.js";
 
 // Session management maps
 const streamableTransports = new Map<string, WebStandardStreamableHTTPServerTransport>();
-const sseTransports = new Map<string, SSEServerTransport>();
 const sessionServers = new Map<string, McpServer>();
 
 function createMcpServer(db: DbClient): McpServer {
@@ -189,6 +187,23 @@ function createMcpServer(db: DbClient): McpServer {
         return { content: [{ type: "text", text: `Agent '${agentId}' joined pool '${poolName}'\nCurrent members: ${memberCount}/${maxMembers}` }] };
       } catch (error: any) {
         return { content: [{ type: "text", text: `Failed to join pool: ${error.message}` }], isError: true };
+      }
+    },
+  );
+
+  server.tool(
+    "litehub_pool_leave",
+    "Leave a collaboration pool",
+    {
+      pool: z.string().describe("Pool name to leave"),
+      agentId: z.string().describe("Agent ID leaving the pool"),
+    },
+    async ({ pool: poolName, agentId }) => {
+      try {
+        await pool.leavePool(db, poolName, agentId);
+        return { content: [{ type: "text", text: `Agent '${agentId}' left pool '${poolName}'` }] };
+      } catch (error: any) {
+        return { content: [{ type: "text", text: `Failed to leave pool: ${error.message}` }], isError: true };
       }
     },
   );
@@ -436,6 +451,47 @@ function createMcpServer(db: DbClient): McpServer {
     },
   );
 
+  server.tool(
+    "a2a_send_message",
+    "Send a message to an existing A2A task. This is the core messaging function for agent-to-agent communication.",
+    {
+      taskId: z.string().describe("Task ID to send message to"),
+      agentId: z.string().describe("Sender agent ID"),
+      message: z.any().describe("Message content to send (any JSON-serializable data)"),
+      messageId: z.string().optional().describe("Optional message ID for idempotency"),
+      metadata: z.record(z.string(), z.any()).optional().describe("Optional metadata attached to the message"),
+    },
+    async ({ taskId, agentId, message, messageId, metadata }) => {
+      try {
+        const result = await a2a.sendToTask(db, { taskId, agentId, message, messageId, metadata });
+        if (!result.ok) return { content: [{ type: "text", text: `Failed: ${result.error}` }], isError: true };
+        return { content: [{ type: "text", text: `Message sent to task '${taskId}'. Pointer ID: ${result.pointerId}` }] };
+      } catch (error: any) {
+        return { content: [{ type: "text", text: `Failed: ${error.message}` }], isError: true };
+      }
+    },
+  );
+
+  server.tool(
+    "a2a_subscribe_task",
+    "Get the SSE subscription URL for real-time task updates. Returns the URL to connect to for receiving messages and status changes.",
+    { taskId: z.string().describe("Task ID to subscribe to") },
+    async ({ taskId }) => {
+      try {
+        const task = await a2a.getTask(db, taskId);
+        if (!task) return { content: [{ type: "text", text: `Task '${taskId}' not found` }], isError: true };
+        return {
+          content: [{
+            type: "text",
+            text: `SSE Subscription URL for task '${taskId}':\n\nGET /api/a2a/tasks/${taskId}/subscribe\n\nStatus: ${task.status}\nQueue: ${task.queueName}\n\nConnect to this endpoint via SSE to receive real-time updates.`
+          }]
+        };
+      } catch (error: any) {
+        return { content: [{ type: "text", text: `Failed: ${error.message}` }], isError: true };
+      }
+    },
+  );
+
   // ─── ACP Tools ─────────────────────────────────────────────────────
 
   server.tool(
@@ -676,41 +732,5 @@ export async function handleStreamableHTTP(c: Context) {
 }
 
 export async function handleSSE(c: Context) {
-  const stream = new ReadableStream({
-    start(controller) {
-      const encoder = new TextEncoder();
-
-      const sendMessage = (data: unknown) => {
-        const message = `data: ${JSON.stringify(data)}\n\n`;
-        controller.enqueue(encoder.encode(message));
-      };
-
-      sendMessage({
-        jsonrpc: "2.0",
-        method: "notifications/initialized",
-        params: {
-          protocolVersion: "2024-11-05",
-          capabilities: { tools: { listChanged: true }, resources: {} },
-          serverInfo: { name: "LiteHub", version: "2.0.0" },
-        },
-      });
-
-      const interval = setInterval(() => {
-        controller.enqueue(encoder.encode(": heartbeat\n\n"));
-      }, 15000);
-
-      c.req.raw.signal.addEventListener("abort", () => {
-        clearInterval(interval);
-        controller.close();
-      });
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-    },
-  });
+  return handleStreamableHTTP(c);
 }

@@ -178,3 +178,133 @@ export async function getPushNotification(
 ) {
   return getPushSubscriptions(db, agentId, "a2a");
 }
+
+// ─── Task Messaging (A2A core) ───────────────────────────────────────────
+
+export interface SendMessageParams {
+  taskId: string;
+  agentId: string;
+  message: unknown;
+  messageId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export async function sendToTask(
+  db: DbClient,
+  params: SendMessageParams,
+): Promise<{ ok: boolean; pointerId?: string; error?: string }> {
+  const { taskId, agentId, message, messageId, metadata } = params;
+
+  const task = await getTask(db, taskId);
+  if (!task) {
+    return { ok: false, error: "Task not found" };
+  }
+
+  if (task.status === "cancelled" || task.status === "completed" || task.status === "failed") {
+    return { ok: false, error: `Task is already ${task.status}` };
+  }
+
+  const pointer = await produce(
+    db,
+    task.queueName,
+    JSON.stringify({ taskId, message, messageId, metadata, sender: agentId, timestamp: new Date().toISOString() }),
+    agentId,
+  );
+
+  await notifySubscribers(db, "a2a", taskId, "message_sent", {
+    type: "message",
+    taskId,
+    pointerId: pointer?.id,
+    sender: agentId,
+  });
+
+  return { ok: true, pointerId: pointer?.id };
+}
+
+export interface TaskEvent {
+  type: "message" | "status";
+  taskId: string;
+  data?: unknown;
+  status?: string;
+  timestamp: string;
+}
+
+export function createTaskSubscription(
+  db: DbClient,
+  taskId: string,
+): { stream: ReadableStream<Uint8Array>; close: () => void } {
+  const encoder = new TextEncoder();
+  let closed = false;
+  let lastCheck = Date.now();
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const task = await getTask(db, taskId);
+      if (!task) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: "Task not found" })}\n\n`));
+        controller.close();
+        return;
+      }
+
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "connected", taskId, status: task.status })}\n\n`));
+
+      const pollInterval = setInterval(async () => {
+        if (closed) {
+          clearInterval(pollInterval);
+          return;
+        }
+
+        try {
+          const currentTask = await getTask(db, taskId);
+          if (!currentTask) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: "Task not found" })}\n\n`));
+            clearInterval(pollInterval);
+            controller.close();
+            return;
+          }
+
+          const newMessages = await db.execute(
+            "SELECT id, data, created_at FROM pointers WHERE queue = ? AND datetime(created_at) > datetime(?) ORDER BY created_at",
+            [currentTask.queueName, new Date(lastCheck).toISOString()],
+          );
+
+          lastCheck = Date.now();
+
+          for (const msg of newMessages.rows) {
+            let data: unknown = msg.data;
+            try { data = JSON.parse(msg.data as string); } catch { /* keep raw */ }
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "message", taskId, data, pointerId: msg.id, createdAt: msg.created_at })}\n\n`));
+          }
+
+          if (["completed", "failed", "cancelled"].includes(currentTask.status)) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "status", taskId, status: currentTask.status })}\n\n`));
+            clearInterval(pollInterval);
+            controller.close();
+          }
+        } catch (err: any) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`));
+        }
+      }, 1000);
+
+      const heartbeat = setInterval(() => {
+        if (closed) {
+          clearInterval(heartbeat);
+          return;
+        }
+        controller.enqueue(encoder.encode(": heartbeat\n\n"));
+      }, 15000);
+
+      (controller as any)._intervals = [pollInterval, heartbeat];
+    },
+    cancel() {
+      closed = true;
+    },
+  });
+
+  return {
+    stream,
+    close: () => {
+      closed = true;
+    },
+  };
+}

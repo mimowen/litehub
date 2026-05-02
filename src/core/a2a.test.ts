@@ -6,6 +6,7 @@ import { registerAgent } from "./queue.js";
 import {
   createTask, getTask, listTasks, updateTask, cancelTask,
   setPushNotification, getPushNotification,
+  sendToTask,
 } from "./a2a.js";
 
 process.env.LITEHUB_DB = ":memory:";
@@ -159,5 +160,51 @@ describe("push notification", () => {
   it("returns empty array for agent with no subscriptions", async () => {
     const subs = await getPushNotification(db, "unknown");
     expect(subs).toHaveLength(0);
+  });
+});
+
+describe("sendToTask", () => {
+  it("sends a message to an existing task", async () => {
+    const agentId = uniq("a");
+    await registerAgent(db, { agentId, name: "Agent", role: "producer", queues: [] });
+    const created = await createTask(db, { agentId, name: "Test Task" });
+    const result = await sendToTask(db, { taskId: created.taskId!, agentId, message: { text: "Hello" } });
+    expect(result.ok).toBe(true);
+    expect(result.pointerId).toBeDefined();
+
+    const task = await getTask(db, created.taskId!);
+    expect(task!.messages).toHaveLength(2);
+  });
+
+  it("rejects non-existent task", async () => {
+    const agentId = uniq("a");
+    await registerAgent(db, { agentId, name: "Agent", role: "producer", queues: [] });
+    const result = await sendToTask(db, { taskId: "nonexistent", agentId, message: {} });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("not found");
+  });
+
+  it("rejects message to completed task", async () => {
+    const agentId = uniq("a");
+    await registerAgent(db, { agentId, name: "Agent", role: "producer", queues: [] });
+    const created = await createTask(db, { agentId, name: "Task" });
+    await updateTask(db, created.taskId!, agentId, "completed");
+    const result = await sendToTask(db, { taskId: created.taskId!, agentId, message: {} });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("already completed");
+  });
+
+  it("sends message with metadata", async () => {
+    const agentId = uniq("a");
+    await registerAgent(db, { agentId, name: "Agent", role: "producer", queues: [] });
+    const created = await createTask(db, { agentId, name: "Task" });
+    const result = await sendToTask(db, {
+      taskId: created.taskId!,
+      agentId,
+      message: { type: "response", data: "answer" },
+      messageId: "msg-123",
+      metadata: { priority: "high" },
+    });
+    expect(result.ok).toBe(true);
   });
 });
