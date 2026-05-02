@@ -1,10 +1,12 @@
 {
   "functions": {
-    "api/mcp/**": { "runtime": "@vercel/node@3" },
-    "api/mcp-sse.ts": { "runtime": "@vercel/node@3" }
+    "api/mcp/**": { "runtime": "@vercel/node" },
+    "api/mcp-sse.ts": { "runtime": "@vercel/node" }
   },
   "rewrites": [
     { "source": "/.well-known/agent-card.json", "destination": "/api/main" },
+    { "source": "/a2a", "destination": "/api/main" },
+    { "source": "/a2a/stream", "destination": "/api/main" },
     { "source": "/api/mcp", "destination": "/api/mcp-sse" },
     { "source": "/api/mcp/sse", "destination": "/api/mcp-sse" },
     { "source": "/mcp", "destination": "/api/mcp-sse" },
