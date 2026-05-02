@@ -48,6 +48,7 @@ app.get("/", (c) => c.html(pageH.getHomePageHtml(getBaseUrl(c))));
 // ─── Dashboard ───────────────────────────────────────────────────────────
 
 app.get("/api/dashboard", (c) => c.html(pageH.getDashboardHtml()));
+app.get("/dashboard", (c) => c.html(pageH.getDashboardHtml()));
 
 // ─── Skill download ──────────────────────────────────────────────────────
 

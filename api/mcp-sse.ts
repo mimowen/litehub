@@ -2,13 +2,19 @@
 export const config = { runtime: 'nodejs' };
 
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { logger } from 'hono/logger';
 import { handle } from 'hono/vercel';
-import baseApp from '../src/index.js';
 import { getDbClient } from '../src/adapters/db/turso.js';
 import type { LiteHubEnv } from '../src/types.js';
-import { mountMCPRoutes } from '../src/mcp-routes.js';
+import { handleStreamableHTTP, handleSSE } from '../src/mcp-handler.js';
+import { getBaseUrl, buildMcpDiscoveryConfig } from '../src/utils.js';
 
 const app = new Hono<LiteHubEnv>();
+
+// Middleware
+app.use('*', logger());
+app.use('*', cors({ origin: process.env.LITEHUB_CORS_ORIGIN || '*' }));
 
 // Inject db client
 app.use('*', async (c, next) => {
@@ -17,10 +23,22 @@ app.use('*', async (c, next) => {
   await next();
 });
 
-// Mount base app routes
-app.route('/', baseApp);
+// MCP Discovery
+app.get('/api/mcp', (c) => {
+  const baseUrl = getBaseUrl(c);
+  const config = buildMcpDiscoveryConfig(baseUrl);
+  c.header('Content-Type', 'application/json');
+  c.header('Content-Disposition', 'attachment; filename="litehub-mcp.json"');
+  return c.json(config);
+});
 
-// Mount MCP routes with Node.js runtime
-mountMCPRoutes(app);
+// MCP Endpoints
+app.get('/mcp', (c) => handleSSE(c));
+app.post('/mcp', (c) => handleStreamableHTTP(c));
+app.delete('/mcp', (c) => handleStreamableHTTP(c));
+app.all('/api/mcp/sse', (c) => {
+  if (c.req.method === 'GET') return handleSSE(c);
+  return handleStreamableHTTP(c);
+});
 
 export default handle(app);

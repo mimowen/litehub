@@ -1,14 +1,14 @@
 {
   "rewrites": [
+    { "source": "/", "destination": "/api/main" },
+    { "source": "/dashboard", "destination": "/api/main" },
     { "source": "/.well-known/agent-card.json", "destination": "/api/main" },
     { "source": "/a2a", "destination": "/api/main" },
     { "source": "/a2a/stream", "destination": "/api/main" },
-    { "source": "/api/mcp", "destination": "/api/mcp-sse" },
     { "source": "/api/mcp/sse", "destination": "/api/mcp-sse" },
     { "source": "/mcp", "destination": "/api/mcp-sse" },
     { "source": "/mcp/(.*)", "destination": "/api/mcp-sse" },
     { "source": "/api/(.*)", "destination": "/api/main" },
-    { "source": "/dashboard", "destination": "/api/main" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
