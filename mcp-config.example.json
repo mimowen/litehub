@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "litehub": {
+      "url": "https://你的-litehub-域名/api/mcp/sse",
+      "transport": "sse",
+      "description": "LiteHub — 轻量级 Agent 协作管道",
+      "headers": {
+        "Authorization": "Bearer 你的-token"
+      }
+    }
+  }
+}

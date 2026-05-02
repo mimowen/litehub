@@ -21,3 +21,4 @@ litehub.db
 litehub.db-*
 .trae/
 .env*.local
+mcp-config.json
