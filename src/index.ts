@@ -1,8 +1,7 @@
 // src/index.ts — Unified Hono app for LiteHub
 // Route layer: maps URL → handler, nothing more
-// Vercel route limit: only 2 functions (api/main + api/mcp-sse)
+// Note: MCP SDK routes are handled separately in api/mcp-sse.ts to reduce bundle size
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import type { LiteHubEnv } from "./types.js";
 import { getBaseUrl } from "./utils.js";
@@ -23,7 +22,18 @@ const app = new Hono<LiteHubEnv>();
 export default app;
 
 app.use("*", logger());
-app.use("*", cors({ origin: process.env.LITEHUB_CORS_ORIGIN || "*" }));
+
+// Custom CORS middleware for Vercel Node.js Runtime compatibility
+app.use("*", async (c, next) => {
+  await next();
+  c.res.headers.set("Access-Control-Allow-Origin", process.env.LITEHUB_CORS_ORIGIN || "*");
+  c.res.headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  c.res.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  c.res.headers.set("Access-Control-Max-Age", "86400");
+});
+
+// Handle OPTIONS requests
+app.options("*", (c) => new Response(null, { status: 204 }));
 
 app.use("/api/*", async (c, next) => {
   if (!c.get("db")) return c.json(fail("Database not initialized", 500), 500);
@@ -43,17 +53,17 @@ app.use("/api/*", authMiddleware);
 
 // ─── Landing Page ────────────────────────────────────────────────────────
 
-app.get("/", (c) => c.html(pageH.getHomePageHtml(getBaseUrl(c))));
+app.get("/", async (c) => c.html(await pageH.getHomeHtml(getBaseUrl(c))));
 
 // ─── Dashboard ───────────────────────────────────────────────────────────
 
-app.get("/api/dashboard", (c) => c.html(pageH.getDashboardHtml()));
-app.get("/dashboard", (c) => c.html(pageH.getDashboardHtml()));
+app.get("/dashboard", async (c) => c.html(await pageH.getDashboardHtml(getBaseUrl(c))));
+app.get("/login", async (c) => c.html(await pageH.getLoginHtml(getBaseUrl(c))));
 
 // ─── Skill download ──────────────────────────────────────────────────────
 
 app.get("/api/skill", async (c) => {
-  const result = await pageH.handleSkillDownload();
+  const result = await pageH.handleSkillDownload(getBaseUrl(c));
   if (!result) return c.text("Skill file not found", 404);
   c.header("Content-Type", result.contentType);
   c.header("Content-Disposition", 'attachment; filename="litehub.md"');
@@ -71,14 +81,7 @@ app.get("/api/mcp", async (c) => {
   return c.json(config);
 });
 
-// ─── MCP endpoints (graceful fallback for Edge) ──────────────────────────
-
-const fb = pageH.mcpFallback;
-const mcpNotAvailable = (c: any) => c.json({ ok: false, error: fb.error }, fb.status);
-app.get("/mcp", mcpNotAvailable);
-app.post("/mcp", mcpNotAvailable);
-app.delete("/mcp", mcpNotAvailable);
-app.all("/api/mcp/sse", mcpNotAvailable);
+// Note: MCP SSE endpoints (/mcp, /api/mcp/sse) are handled by api/mcp-sse.ts
 
 // ─── API Root ────────────────────────────────────────────────────────────
 
@@ -109,13 +112,35 @@ app.get("/api/agents", wrap(async (c) =>
   agentH.handleListAgents(c.get("db"))));
 
 app.get("/api/agents/:id", wrap(async (c) =>
-  agentH.handleGetAgent(c.get("db"), c.req.param("id"))));
+  agentH.handleGetAgent(c.get("db"), c.req.param("id")!)));
 
 app.get("/api/queues", wrap(async (c) =>
   queueH.handleListQueues(c.get("db"))));
 
 app.get("/api/queues/:name", wrap(async (c) =>
-  queueH.handleQueueStatus(c.get("db"), c.req.param("name"))));
+  queueH.handleQueueStatus(c.get("db"), c.req.param("name")!)));
+
+app.post("/api/queues/update", wrap(async (c) =>
+  queueH.handleQueueUpdate(c.get("db"), await c.req.json())));
+
+app.post("/api/queues/block", wrap(async (c) =>
+  queueH.handleQueueBlock(c.get("db"), await c.req.json())));
+
+app.post("/api/queues/unblock", wrap(async (c) =>
+  queueH.handleQueueUnblock(c.get("db"), await c.req.json())));
+
+app.post("/api/agent/delete", wrap(async (c) =>
+  queueH.handleAgentDelete(c.get("db"), await c.req.json())));
+
+app.get("/api/queues/:name/history", wrap(async (c) => {
+  const name = c.req.param("name")!;
+  const limit = c.req.query("limit");
+  return queueH.handleQueueHistory(c.get("db"), name, {
+    status: c.req.query("status"),
+    afterId: c.req.query("afterId"),
+    limit: limit ? parseInt(limit) : undefined,
+  });
+}));
 
 app.get("/api/peek", wrap(async (c) =>
   queueH.handlePeek(c.get("db"), c.req.query("queue") || "")));
@@ -125,6 +150,9 @@ app.get("/api/peek", wrap(async (c) =>
 app.post("/api/pool/create", wrap(async (c) =>
   poolH.handlePoolCreate(c.get("db"), await c.req.json())));
 
+app.post("/api/pool/update", wrap(async (c) =>
+  poolH.handlePoolUpdate(c.get("db"), await c.req.json())));
+
 app.get("/api/pools", wrap(async (c) =>
   poolH.handleListPools(c.get("db"))));
 
@@ -133,16 +161,18 @@ app.get("/api/pool/members", wrap(async (c) =>
 
 app.get("/api/pool/messages", wrap(async (c) => {
   const pool = c.req.query("pool") || "";
+  const agentId = c.req.query("agentId");
   const limit = c.req.query("limit");
-  return poolH.handlePoolMessages(c.get("db"), pool, {
+  return poolH.handlePoolMessages(c.get("db"), pool, agentId, {
     since: c.req.query("since"),
     tag: c.req.query("tag"),
     limit: limit ? parseInt(limit) : undefined,
+    afterId: c.req.query("afterId"),
   });
 }));
 
 app.get("/api/pool/:name", wrap(async (c) =>
-  poolH.handleGetPool(c.get("db"), c.req.param("name"))));
+  poolH.handleGetPool(c.get("db"), c.req.param("name")!)));
 
 app.post("/api/pool/join", wrap(async (c) =>
   poolH.handlePoolJoin(c.get("db"), await c.req.json())));
@@ -150,17 +180,24 @@ app.post("/api/pool/join", wrap(async (c) =>
 app.post("/api/pool/leave", wrap(async (c) =>
   poolH.handlePoolLeave(c.get("db"), await c.req.json())));
 
+app.post("/api/pools/block", wrap(async (c) =>
+  poolH.handlePoolBlock(c.get("db"), await c.req.json())));
+
+app.post("/api/pools/unblock", wrap(async (c) =>
+  poolH.handlePoolUnblock(c.get("db"), await c.req.json())));
+
 app.post("/api/pool/speak", wrap(async (c) =>
   poolH.handlePoolSpeak(c.get("db"), await c.req.json())));
 
 // ─── A2A Standard Protocol (JSON-RPC 2.0) ────────────────────────────────
 
-app.post("/a2a", wrap(async (c) => {
+app.post("/a2a", async (c) => {
   const db = c.get("db");
   const body = await c.req.json();
   const agentId = c.req.header("x-agent-id") || "default-agent";
-  return handleA2ARequest(db, body, agentId, getBaseUrl(c));
-}));
+  const result = await handleA2ARequest(db, body, agentId, getBaseUrl(c));
+  return c.json(result);
+});
 
 app.get("/a2a/stream", async (c) => {
   const taskId = c.req.query("taskId");
@@ -182,7 +219,7 @@ app.get("/api/a2a/tasks/pushNotificationConfig", wrap(async (c) =>
   a2aH.handleA2AGetPushNotification(c.get("db"), c.req.query("agentId") || "")));
 
 app.get("/api/a2a/tasks/:id", wrap(async (c) =>
-  a2aH.handleA2AGetTask(c.get("db"), c.req.param("id"))));
+  a2aH.handleA2AGetTask(c.get("db"), c.req.param("id")!)));
 
 app.post("/api/a2a/tasks/cancel", wrap(async (c) =>
   a2aH.handleA2ACancelTask(c.get("db"), await c.req.json())));
@@ -194,7 +231,7 @@ app.post("/api/a2a/tasks/update", wrap(async (c) =>
   a2aH.handleA2AUpdateTask(c.get("db"), await c.req.json())));
 
 app.post("/api/a2a/tasks/:id/send", wrap(async (c) =>
-  a2aH.handleA2ASendToTask(c.get("db"), c.req.param("id"), await c.req.json())));
+  a2aH.handleA2ASendToTask(c.get("db"), c.req.param("id")!, await c.req.json())));
 
 app.get("/api/a2a/tasks/:id/subscribe", async (c) => {
   const result = await a2aH.handleA2ASubscribe(c.get("db"), c.req.param("id"));
@@ -225,7 +262,7 @@ app.get("/api/acp/runs/:id/stream", async (c) => {
 });
 
 app.get("/api/acp/runs/:id", wrap(async (c) =>
-  acpH.handleACPGetRun(c.get("db"), c.req.param("id"))));
+  acpH.handleACPGetRun(c.get("db"), c.req.param("id")!)));
 
 app.post("/api/acp/runs/cancel", wrap(async (c) =>
   acpH.handleACPCancelRun(c.get("db"), await c.req.json())));
@@ -237,22 +274,19 @@ app.post("/api/acp/contexts", wrap(async (c) =>
   acpH.handleACPCreateContext(c.get("db"), await c.req.json())));
 
 app.get("/api/acp/contexts/:id", wrap(async (c) =>
-  acpH.handleACPGetContext(c.get("db"), c.req.param("id"))));
+  acpH.handleACPGetContext(c.get("db"), c.req.param("id")!)));
 
 app.get("/api/acp/contexts/:id/messages", wrap(async (c) =>
-  acpH.handleACPContextMessages(c.get("db"), c.req.param("id"))));
+  acpH.handleACPContextMessages(c.get("db"), c.req.param("id")!)));
 
 app.post("/api/acp/contexts/:id/join", wrap(async (c) =>
-  acpH.handleACPJoinContext(c.get("db"), c.req.param("id"), await c.req.json())));
+  acpH.handleACPJoinContext(c.get("db"), c.req.param("id")!, await c.req.json())));
 
 app.post("/api/acp/contexts/:id/leave", wrap(async (c) =>
-  acpH.handleACPLeaveContext(c.get("db"), c.req.param("id"), await c.req.json())));
+  acpH.handleACPLeaveContext(c.get("db"), c.req.param("id")!, await c.req.json())));
 
 app.post("/api/acp/contexts/:id/speak", wrap(async (c) =>
-  acpH.handleACPSpeakContext(c.get("db"), c.req.param("id"), await c.req.json())));
-
-app.get("/api/acp/agents", wrap(async (c) =>
-  acpH.handleACPListAgents(c.get("db"))));
+  acpH.handleACPSpeakContext(c.get("db"), c.req.param("id")!, await c.req.json())));
 
 app.get("/api/acp/agents/:agentId", wrap(async (c) =>
-  acpH.handleACPGetAgent(c.get("db"), c.req.param("agentId"))));
+  acpH.handleACPGetAgent(c.get("db"), c.req.param("agentId")!)));

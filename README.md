@@ -56,9 +56,9 @@ npm start          # → http://localhost:3000
 
 ```
 litehub/
-├── api/                          ← Vercel 部署入口（仅 2 个函数，符合 12 路由限制）
+├── api/                          ← Vercel 部署入口（2 个 Edge 函数）
 │   ├── main.ts                   #   Edge Runtime 入口（所有 /api/* 路由）
-│   └── mcp-sse.ts                #   Node.js Runtime 入口（MCP SSE 端点）
+│   └── mcp-edge.ts               #   Edge Runtime 入口（/mcp MCP 端点）
 ├── src/
 │   ├── index.ts                  ← Hono 应用：单入口路由分发 → handlers/
 │   ├── server.ts                 #   Node.js 本地启动文件
@@ -83,8 +83,6 @@ litehub/
 │   ├── protocols/                ← 协议适配层（对模型/工具透明）
 │   │   ├── a2a.ts                #   A2A JSON-RPC 2.0 标准适配器
 │   │   └── acp.ts                #   ACP REST API 标准适配器
-│   ├── mcp-handler.ts            #   MCP 协议实现（Streamable HTTP + SSE）
-│   ├── mcp-routes.ts             #   MCP 路由挂载（Node.js Runtime 专用）
 │   ├── mcp/
 │   │   └── tools.ts              #   MCP 工具定义
 │   ├── utils/
@@ -101,19 +99,28 @@ litehub/
 
 ## 架构设计
 
-### 单入口路由分发
+### 全 Edge 架构设计
 
-LiteHub 采用**单入口路由分发**架构，所有 API 请求通过一个 Hono 应用入口（`src/index.ts`），由路由层分发到对应的 handler：
+LiteHub 采用**全 Edge 架构**，所有 API 均在 Edge Runtime 运行：
 
 ```
-HTTP Request → Hono Router → authMiddleware → handler → core → db
+/mcp → api/mcp-edge.ts (Edge Runtime) → 轻量 MCP 实现
+所有其他路由 → api/main.ts (Edge Runtime) → Hono app
 ```
 
-**为什么这样设计？**
+**两个入口的分工：**
 
-- **Vercel 12 路由限制**：Vercel 免费版限制 12 个 Serverless Function。我们只使用 2 个：
-  - `api/main.ts`（Edge Runtime）：处理所有 `/api/*` 路由
-  - `api/mcp-sse.ts`（Node.js Runtime）：处理 MCP SSE 端点（需要 `@modelcontextprotocol/sdk`）
+| 入口 | Runtime | 处理路由 | 原因 |
+|------|---------|---------|------|
+| **api/mcp-edge.ts** | Edge | `/mcp` | 轻量 MCP JSON-RPC 2.0 实现，快速冷启动（0.94秒） |
+| **api/main.ts** | Edge | 所有其他路由 | 冷启动快、全球边缘部署、性能更好 |
+
+**为什么全用 Edge Runtime？**
+
+- **Edge Runtime**：所有请求都走 Edge Runtime，冷启动极快
+- **MCP 协议**：自己实现 JSON-RPC 2.0 协议，不依赖 `@modelcontextprotocol/sdk`（该 SDK 在 Vercel Node.js Serverless Functions 冷启动超 60 秒）
+- **Vercel 12 路由限制**：只使用 2 个 Serverless Function
+- **性能优先**：全球边缘节点部署，响应 < 1 秒
 - **模块解耦**：修改 Queue 逻辑只需改 `handlers/queues.ts` + `core/queue.ts`，不影响其他模块
 - **统一认证**：`middleware/auth.ts` 在路由层统一拦截，handler 无需关心认证
 
@@ -235,18 +242,26 @@ LiteHub 现已完整支持 **Model Context Protocol (MCP)**，可以直接与 Cu
 
 #### 端点路径
 
-LiteHub 支持两种 MCP 端点路径（功能完全相同）：
+LiteHub 使用单一简洁的 MCP 端点路径：`/mcp`
 
-- **标准路径**: `/api/mcp/sse` （推荐）
-- **简化路径**: `/mcp` （更简洁，自动重定向到标准路径）
-
-例如：
-- `https://your-litehub.vercel.app/api/mcp/sse`
-- `https://your-litehub.vercel.app/mcp`
+例如：`https://your-litehub.vercel.app/mcp`
 
 #### 无需认证（开发环境）
 
 如果你没有设置 `LITEHUB_TOKEN` 环境变量，可以直接连接：
+
+**Trae 配置示例** (`.trae/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "litehub": {
+      "url": "https://your-litehub.vercel.app/mcp",
+      "transport": "streamableHttp",
+      "description": "LiteHub — 轻量级 Agent 协作管道"
+    }
+  }
+}
+```
 
 **Cursor 配置示例** (`~/.cursor/mcp.json`):
 ```json
@@ -254,7 +269,7 @@ LiteHub 支持两种 MCP 端点路径（功能完全相同）：
   "mcpServers": {
     "litehub": {
       "url": "https://your-litehub.vercel.app/mcp",
-      "transport": "streamable-http"
+      "transport": "streamableHttp"
     }
   }
 }
@@ -264,13 +279,29 @@ LiteHub 支持两种 MCP 端点路径（功能完全相同）：
 
 如果你设置了 `LITEHUB_TOKEN` 环境变量，需要在 MCP 客户端配置中添加认证头：
 
+**Trae 配置示例** (`.trae/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "litehub": {
+      "url": "https://your-litehub.vercel.app/mcp",
+      "transport": "streamableHttp",
+      "description": "LiteHub — 轻量级 Agent 协作管道",
+      "headers": {
+        "Authorization": "Bearer your-secret-token-here"
+      }
+    }
+  }
+}
+```
+
 **Cursor 配置示例** (`~/.cursor/mcp.json`):
 ```json
 {
   "mcpServers": {
     "litehub": {
-      "url": "https://your-litehub.vercel.app/api/mcp/sse",
-      "transport": "streamable-http",
+      "url": "https://your-litehub.vercel.app/mcp",
+      "transport": "streamableHttp",
       "headers": {
         "Authorization": "Bearer your-secret-token-here"
       }
@@ -287,8 +318,8 @@ LiteHub 支持两种 MCP 端点路径（功能完全相同）：
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/client"],
       "env": {
-        "MCP_SERVER_URL": "https://your-litehub.vercel.app/api/mcp/sse",
-        "MCP_TRANSPORT": "streamable-http",
+        "MCP_SERVER_URL": "https://your-litehub.vercel.app/mcp",
+        "MCP_TRANSPORT": "streamableHttp",
         "AUTHORIZATION": "Bearer your-secret-token-here"
       }
     }
@@ -346,17 +377,17 @@ LiteHub 支持两种 MCP 端点路径（功能完全相同）：
 
 ### 技术细节
 
-- **传输协议**: Streamable HTTP（推荐）+ SSE（演示）
+- **传输协议**: Streamable HTTP（推荐）
 - **协议版本**: MCP 2024-11-05
-- **兼容性**: 完全符合官方 MCP 规范，支持标准 MCP 客户端
-- **Vercel 优化**: 使用 Web Standard APIs，完美适配 Serverless/Edge Functions
-- **会话管理**: 自动生成和管理 Session ID，支持多会话并发
+- **MCP 实现**: 轻量 JSON-RPC 2.0 协议，运行在 Edge Runtime
+- **Vercel 优化**: Edge Runtime 全球边缘部署，冷启动 < 1 秒
+- **完全兼容**: 对 MCP 客户端透明，客户端感受不到区别
 
-> **为什么选择 Streamable HTTP？**
-> - Vercel Serverless 对 SSE 有严格超时限制（10秒），不适合长连接
-> - Streamable HTTP 每次请求独立，无超时问题
-> - 更高效，减少 50% CPU 使用率
-> - 官方推荐的现代 MCP 传输协议
+> **为什么选择 Edge Runtime 而非 Node.js？**
+> - Node.js Serverless Functions 冷启动超 60 秒（`@modelcontextprotocol/sdk` 依赖太大）
+> - Edge Runtime 轻量实现，0.94 秒冷启动
+> - 每次请求独立，无超时问题
+> - 全球边缘节点，响应极快
 
 ## API 文档
 
@@ -607,3 +638,5 @@ GET ${LITEHUB_URL}/skill
 ## 许可证
 
 MIT · [GitHub](https://github.com/mimowen/litehub)
+
+## 常见问题

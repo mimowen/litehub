@@ -6,6 +6,7 @@ import {
   ensureAgent, registerAgent, getAgent, listAgents,
   queueExists, ensureQueue, listQueues,
   produce, consume, peek,
+  deleteAgent, blockQueue, unblockQueue, getQueueStatus,
 } from "./queue.js";
 
 process.env.LITEHUB_DB = ":memory:";
@@ -138,5 +139,182 @@ describe("produce / consume / peek", () => {
     await registerAgent(db, { agentId: consId, name: "Consumer", role: "consumer", queues: [] });
     const items = await consume(db, qn, consId, 1);
     expect(items).toHaveLength(0);
+  });
+});
+
+describe("deleteAgent", () => {
+  it("deletes an existing agent", async () => {
+    const agentId = uniq("a");
+    await registerAgent(db, { agentId, name: "Agent", role: "producer", queues: [] });
+    expect(await getAgent(db, agentId)).not.toBeNull();
+    
+    const result = await deleteAgent(db, agentId);
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("unregistered");
+    
+    expect(await getAgent(db, agentId)).toBeNull();
+  });
+
+  it("returns error for non-existent agent", async () => {
+    const result = await deleteAgent(db, "non-existent");
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("not found");
+  });
+
+  it("prevents deleted agent from consuming", async () => {
+    const qn = uniq("q");
+    const prodId = uniq("prod"), consId = uniq("cons");
+    await registerAgent(db, { agentId: prodId, name: "Producer", role: "producer", queues: [qn] });
+    await registerAgent(db, { agentId: consId, name: "Consumer", role: "consumer", queues: [] });
+    await produce(db, qn, "data", prodId);
+    
+    await deleteAgent(db, consId);
+    
+    await expect(consume(db, qn, consId, 1)).rejects.toThrow("not registered");
+  });
+});
+
+describe("blockQueue", () => {
+  it("blocks a queue", async () => {
+    const qn = uniq("q");
+    await ensureQueue(db, qn);
+    
+    const result = await blockQueue(db, qn);
+    expect(result.success).toBe(true);
+    
+    const status = await getQueueStatus(db, qn);
+    expect(status!.blocked).toBe(true);
+  });
+
+  it("returns error for non-existent queue", async () => {
+    const result = await blockQueue(db, "non-existent");
+    expect(result.success).toBe(false);
+  });
+
+  it("prevents consumption from blocked queue", async () => {
+    const qn = uniq("q");
+    const prodId = uniq("prod"), consId = uniq("cons");
+    await registerAgent(db, { agentId: prodId, name: "Producer", role: "producer", queues: [qn] });
+    await registerAgent(db, { agentId: consId, name: "Consumer", role: "consumer", queues: [] });
+    await produce(db, qn, "data", prodId);
+    
+    await blockQueue(db, qn);
+    
+    const result = await consume(db, qn, consId, 1);
+    expect(result).toEqual([]);
+  });
+});
+
+describe("unblockQueue", () => {
+  it("unblocks a blocked queue", async () => {
+    const qn = uniq("q");
+    await ensureQueue(db, qn);
+    await blockQueue(db, qn);
+    
+    const result = await unblockQueue(db, qn);
+    expect(result.success).toBe(true);
+    
+    const status = await getQueueStatus(db, qn);
+    expect(status!.blocked).toBe(false);
+  });
+
+  it("allows consumption after unblock", async () => {
+    const qn = uniq("q");
+    const prodId = uniq("prod"), consId = uniq("cons");
+    await registerAgent(db, { agentId: prodId, name: "Producer", role: "producer", queues: [qn] });
+    await registerAgent(db, { agentId: consId, name: "Consumer", role: "consumer", queues: [] });
+    await produce(db, qn, "data", prodId);
+    
+    await blockQueue(db, qn);
+    await unblockQueue(db, qn);
+    
+    const items = await consume(db, qn, consId, 1);
+    expect(items).toHaveLength(1);
+  });
+});
+
+describe("many-to-many queues", () => {
+  it("supports multiple producers and consumers on same queue", async () => {
+    const qn = uniq("q");
+    const prod1 = uniq("prod"), prod2 = uniq("prod"), cons1 = uniq("cons"), cons2 = uniq("cons");
+    
+    await registerAgent(db, { agentId: prod1, name: "P1", role: "producer", queues: [qn] });
+    await registerAgent(db, { agentId: prod2, name: "P2", role: "producer", queues: [qn] });
+    await registerAgent(db, { agentId: cons1, name: "C1", role: "consumer", queues: [] });
+    await registerAgent(db, { agentId: cons2, name: "C2", role: "consumer", queues: [] });
+    
+    await produce(db, qn, "from-p1", prod1);
+    await produce(db, qn, "from-p2", prod2);
+    
+    const items1 = await consume(db, qn, cons1, 1);
+    expect(items1).toHaveLength(1);
+    expect(items1[0].text).toBe("from-p1");
+    
+    const items2 = await consume(db, qn, cons2, 1);
+    expect(items2).toHaveLength(1);
+    expect(items2[0].text).toBe("from-p2");
+  });
+
+  it("one agent can produce to multiple queues", async () => {
+    const q1 = uniq("q"), q2 = uniq("q");
+    const prodId = uniq("prod");
+    await registerAgent(db, { agentId: prodId, name: "Multi-Producer", role: "producer", queues: [q1, q2] });
+    
+    await produce(db, q1, "data-q1", prodId);
+    await produce(db, q2, "data-q2", prodId);
+    
+    const consId = uniq("cons");
+    await registerAgent(db, { agentId: consId, name: "C1", role: "consumer", queues: [q1, q2] });
+    
+    const items1 = await consume(db, q1, consId, 1);
+    expect(items1[0].text).toBe("data-q1");
+    const items2 = await consume(db, q2, consId, 1);
+    expect(items2[0].text).toBe("data-q2");
+  });
+
+  it("one consumer can subscribe to multiple queues", async () => {
+    const q1 = uniq("q"), q2 = uniq("q");
+    const prod1 = uniq("prod"), prod2 = uniq("prod");
+    await registerAgent(db, { agentId: prod1, name: "P1", role: "producer", queues: [q1] });
+    await registerAgent(db, { agentId: prod2, name: "P2", role: "producer", queues: [q2] });
+    
+    const consId = uniq("cons");
+    await registerAgent(db, { agentId: consId, name: "Multi-Consumer", role: "consumer", queues: [q1, q2] });
+    
+    await produce(db, q1, "from-q1", prod1);
+    await produce(db, q2, "from-q2", prod2);
+    
+    const items1 = await consume(db, q1, consId, 1);
+    expect(items1[0].text).toBe("from-q1");
+    const items2 = await consume(db, q2, consId, 1);
+    expect(items2[0].text).toBe("from-q2");
+  });
+
+  it("blocking one queue does not affect others", async () => {
+    const q1 = uniq("q"), q2 = uniq("q");
+    const prodId = uniq("prod"), consId = uniq("cons");
+    await registerAgent(db, { agentId: prodId, name: "P", role: "producer", queues: [q1, q2] });
+    await registerAgent(db, { agentId: consId, name: "C", role: "consumer", queues: [q1, q2] });
+    
+    await produce(db, q1, "data-q1", prodId);
+    await produce(db, q2, "data-q2", prodId);
+    
+    await blockQueue(db, q1);
+    
+    const items1 = await consume(db, q1, consId, 1);
+    expect(items1).toEqual([]);
+    
+    const items2 = await consume(db, q2, consId, 1);
+    expect(items2).toHaveLength(1);
+    expect(items2[0].text).toBe("data-q2");
+  });
+
+  it("listAgents returns pools field", async () => {
+    const agentId = uniq("a");
+    await registerAgent(db, { agentId, name: "A1", role: "both", queues: ["q1"] });
+    const agents = await listAgents(db);
+    const agent = agents.find(a => a.agentId === agentId);
+    expect(agent).toBeDefined();
+    expect(agent!.pools).toBeDefined();
   });
 });

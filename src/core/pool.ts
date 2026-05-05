@@ -13,6 +13,8 @@ export interface PoolInfo {
   maxMembers: number;
   memberCount: number;
   creatorId?: string;
+  type?: string;
+  blocked?: number;
   createdAt: string;
 }
 
@@ -42,13 +44,20 @@ export async function createPool(
   guidelines?: string,
   maxMembers?: number,
   creatorId?: string,
+  type?: string,
 ): Promise<PoolInfo> {
   const defaultGuidelines = "You are a collaborative agent in this Pool. Share progress transparently. Reference others' work. Do not command other agents.";
   await db.execute(
-    `INSERT INTO pools (name, description, guidelines, max_members, creator_id)
-     VALUES (?, ?, ?, ?, ?)`,
-    [name, description || "", guidelines || defaultGuidelines, maxMembers || 20, creatorId || ""],
+    `INSERT INTO pools (name, description, guidelines, max_members, creator_id, type)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [name, description || "", guidelines || defaultGuidelines, maxMembers || 20, creatorId || "", type || "user"],
   );
+  
+  // 自动将创建者加入池子
+  if (creatorId) {
+    await db.execute("INSERT INTO pool_members (pool, agent_id) VALUES (?, ?)", [name, creatorId]);
+  }
+  
   return (await getPool(db, name))!;
 }
 
@@ -66,12 +75,18 @@ export async function getPool(db: DbClient, name: string): Promise<PoolInfo | nu
     maxMembers: (row.max_members as number) || 20,
     memberCount,
     creatorId: row.creator_id as string,
+    type: row.type as string,
+    blocked: (row.blocked as number) || 0,
     createdAt: row.created_at as string,
   };
 }
 
-export async function listPools(db: DbClient): Promise<PoolInfo[]> {
-  const result = await db.execute("SELECT * FROM pools ORDER BY created_at");
+export async function listPools(db: DbClient, options?: { includeInternal?: boolean }): Promise<PoolInfo[]> {
+  const includeInternal = options?.includeInternal || false;
+  const sql = includeInternal
+    ? "SELECT * FROM pools ORDER BY created_at"
+    : "SELECT * FROM pools WHERE type = 'user' OR type IS NULL ORDER BY created_at";
+  const result = await db.execute(sql);
   const pools: PoolInfo[] = [];
   for (const r of result.rows) {
     const memberCount = getValue<number>(
@@ -85,6 +100,8 @@ export async function listPools(db: DbClient): Promise<PoolInfo[]> {
       maxMembers: (r.max_members as number) || 20,
       memberCount,
       creatorId: r.creator_id as string,
+      type: r.type as string,
+      blocked: (r.blocked as number) || 0,
       createdAt: r.created_at as string,
     });
   }
@@ -138,6 +155,13 @@ export async function listMembers(db: DbClient, pool: string): Promise<PoolMembe
   }));
 }
 
+export async function isMember(db: DbClient, pool: string, agentId: string): Promise<boolean> {
+  const member = getOne(
+    await db.execute("SELECT 1 FROM pool_members WHERE pool = ? AND agent_id = ?", [pool, agentId]),
+  );
+  return !!member;
+}
+
 // ─── Messages ─────────────────────────────────────────────────────────────
 
 export async function speak(
@@ -149,6 +173,13 @@ export async function speak(
 ): Promise<PoolMessage | { error: string }> {
   if (!(await ensureAgent(db, agentId))) {
     return { error: "Agent not registered. Call register first." };
+  }
+  const poolInfo = await getPool(db, pool);
+  if (!poolInfo) {
+    return { error: `Pool '${pool}' not found` };
+  }
+  if (!(await isMember(db, pool, agentId))) {
+    return { error: `Agent '${agentId}' is not a member of pool '${pool}'. Call joinPool first.` };
   }
   const id = crypto.randomUUID();
   const tags = options?.tags || [];
@@ -175,12 +206,67 @@ export interface GetMessagesOptions {
   limit?: number;
 }
 
+export async function updatePool(
+  db: DbClient,
+  name: string,
+  updates: { description?: string; guidelines?: string; maxMembers?: number },
+): Promise<PoolInfo | null> {
+  const existing = await getPool(db, name);
+  if (!existing) return null;
+
+  const setClauses: string[] = [];
+  const args: unknown[] = [];
+
+  if (updates.description !== undefined) {
+    setClauses.push("description = ?");
+    args.push(updates.description);
+  }
+  if (updates.guidelines !== undefined) {
+    setClauses.push("guidelines = ?");
+    args.push(updates.guidelines);
+  }
+  if (updates.maxMembers !== undefined) {
+    setClauses.push("max_members = ?");
+    args.push(updates.maxMembers);
+  }
+
+  if (setClauses.length > 0) {
+    args.push(name);
+    await db.execute(`UPDATE pools SET ${setClauses.join(", ")} WHERE name = ?`, args);
+  }
+
+  return getPool(db, name);
+}
+
+export interface GetMessagesOptions {
+  since?: string;
+  tag?: string;
+  limit?: number;
+  afterId?: string;
+}
+
 export async function getMessages(
   db: DbClient,
   pool: string,
+  agentId?: string,
   options?: GetMessagesOptions,
-): Promise<{ messages: PoolMessage[]; guidelines: string }> {
+): Promise<{ messages: PoolMessage[]; guidelines: string; hasMore: boolean } | { error: string }> {
+  const poolInfo = await getPool(db, pool);
+  if (!poolInfo) {
+    return { error: `Pool '${pool}' not found` };
+  }
+  if (poolInfo.blocked && poolInfo.blocked > 0) {
+    return { error: `Pool '${pool}' is blocked` };
+  }
+  if (agentId) {
+    const member = await isMember(db, pool, agentId);
+    if (!member) {
+      return { error: `Agent '${agentId}' is not a member of pool '${pool}'. Call joinPool first.` };
+    }
+  }
+
   const limit = options?.limit || 50;
+  const limitPlusOne = limit + 1;
 
   let sql = "SELECT * FROM pool_messages WHERE pool = ?";
   const args: unknown[] = [pool];
@@ -193,12 +279,18 @@ export async function getMessages(
     sql += " AND tags LIKE ?";
     args.push(`%${options.tag}%`);
   }
+  if (options?.afterId) {
+    sql += " AND created_at > (SELECT created_at FROM pool_messages WHERE id = ?)";
+    args.push(options.afterId);
+  }
 
   sql += " ORDER BY created_at DESC LIMIT ?";
-  args.push(limit);
+  args.push(limitPlusOne);
 
   const result = await db.execute(sql, args);
+  const hasMore = result.rows.length > limit;
   const messages: PoolMessage[] = result.rows
+    .slice(0, limit)
     .map((r) => ({
       id: r.id as string,
       pool: r.pool as string,
@@ -211,9 +303,23 @@ export async function getMessages(
     }))
     .reverse(); // newest first → chronological
 
-  const poolInfo = await getPool(db, pool);
   return {
     messages,
-    guidelines: poolInfo?.guidelines || "",
+    guidelines: poolInfo.guidelines || "",
+    hasMore,
   };
+}
+
+export async function blockPool(db: DbClient, name: string): Promise<{ success: boolean; message: string }> {
+  const pool = await getPool(db, name);
+  if (!pool) return { success: false, message: "Pool not found" };
+  await db.execute("UPDATE pools SET blocked = 1 WHERE name = ?", [name]);
+  return { success: true, message: `Pool '${name}' has been blocked. Members will not receive messages.` };
+}
+
+export async function unblockPool(db: DbClient, name: string): Promise<{ success: boolean; message: string }> {
+  const pool = await getPool(db, name);
+  if (!pool) return { success: false, message: "Pool not found" };
+  await db.execute("UPDATE pools SET blocked = 0 WHERE name = ?", [name]);
+  return { success: true, message: `Pool '${name}' has been unblocked. Members can now receive messages.` };
 }

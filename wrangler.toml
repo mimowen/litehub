@@ -4,6 +4,11 @@ main = "src/adapters/cf-workers.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
+# 静态资源目录 (Cloudflare Workers 会自动提供 public/ 目录的文件)
+[assets]
+directory = "public"
+binding = "ASSETS"
+
 # D1 数据库绑定 — 部署前先创建：
 # wrangler d1 create agent-pipeline-db
 # 然后把返回的 database_id 填到下面

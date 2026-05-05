@@ -54,6 +54,7 @@ export async function handleACPGetContext(db: DbClient, contextId: string) {
 
 export async function handleACPContextMessages(db: DbClient, contextId: string) {
   const result = await getContextMessages(db, contextId);
+  if ('error' in result) return fail(result.error as string);
   return ok({ contextId, messages: result.messages });
 }
 
@@ -103,19 +104,25 @@ export async function handleACPRunStream(db: DbClient, runId: string, signal: Ab
       let closed = false;
 
       (async () => {
-        const { messages: msgs } = await getMessages(db, poolName, { limit: 100 });
-        lastCount = msgs.length;
-        controller.enqueue(encoder.encode(`event: init\ndata: ${JSON.stringify({ type: 'init', runId, messageCount: lastCount, messages: msgs })}\n\n`));
+        const result = await getMessages(db, poolName, undefined, { limit: 100 });
+        if (!('error' in result)) {
+          const msgs = result.messages;
+          lastCount = msgs.length;
+          controller.enqueue(encoder.encode(`event: init\ndata: ${JSON.stringify({ type: 'init', runId, messageCount: lastCount, messages: msgs })}\n\n`));
+        }
       })();
 
       const interval = setInterval(async () => {
         if (closed) { clearInterval(interval); return; }
         try {
-          const { messages: current } = await getMessages(db, poolName, { limit: 100 });
-          if (current.length > lastCount) {
-            const newMsgs = current.slice(lastCount);
-            controller.enqueue(encoder.encode(`event: messages\ndata: ${JSON.stringify({ type: 'messages', runId, newMessages: newMsgs })}\n\n`));
-            lastCount = current.length;
+          const result = await getMessages(db, poolName, undefined, { limit: 100 });
+          if (!('error' in result)) {
+            const current = result.messages;
+            if (current.length > lastCount) {
+              const newMsgs = current.slice(lastCount);
+              controller.enqueue(encoder.encode(`event: messages\ndata: ${JSON.stringify({ type: 'messages', runId, newMessages: newMsgs })}\n\n`));
+              lastCount = current.length;
+            }
           }
           controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
         } catch {}

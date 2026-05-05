@@ -52,7 +52,7 @@ export async function createRun(
   const id = runId || crypto.randomUUID();
   const poolName = `acp:${id}`;
 
-  await createPool(db, poolName, name || id, guidelines || "", maxMembers || 10, agentId);
+  await createPool(db, poolName, name || id, guidelines || "", maxMembers || 10, agentId, "acp");
 
   // Record in acp_runs table for protocol tracking
   await db.execute(
@@ -248,7 +248,7 @@ export async function getContextMessages(
   contextId: string,
   options?: { limit?: number },
 ) {
-  return getMessages(db, contextId, options);
+  return getMessages(db, contextId, undefined, options);
 }
 
 // ─── Agent Discovery ──────────────────────────────────────────────────────

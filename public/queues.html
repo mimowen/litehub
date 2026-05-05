@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiteHub — 队列管理</title>
+<link rel="stylesheet" href="/common.css">
+<style>
+.queue-item{display:grid;grid-template-columns:1fr auto 1fr;gap:1rem;align-items:center;padding:.8rem 0;border-bottom:1px solid var(--border);transition:all .3s}
+.queue-item:last-child{border-bottom:none}
+.queue-producers,.queue-consumers{display:flex;flex-direction:column;gap:.4rem}
+.queue-producers{justify-content:flex-end;align-items:flex-start}
+.queue-consumers{justify-content:flex-start;align-items:flex-start}
+.queue-center{display:flex;flex-direction:column;align-items:center;gap:.5rem;min-width:120px}
+.producer-row,.consumer-row{display:flex;align-items:center;gap:.2rem;width:100%}
+.producer-row{justify-content:flex-end}
+.consumer-row{justify-content:flex-start}
+.pool-agents{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center;align-items:center;position:relative;z-index:1}
+.tip{font-size:.75rem;color:var(--muted);margin-top:.3rem}
+</style>
+</head>
+<body>
+<div class="container">
+  <div id="header"></div>
+  <p class="tip">💡 点击箭头/Agent名 = 阻断该Agent（联动变色）| 长按 = 删除 | 点击队列名 = 阻断整个队列</p>
+  <div id="queue-flow"><div class="empty">加载中...</div></div>
+</div>
+<div id="dialog-container"></div>
+<script src="/common.js"></script>
+<script>
+checkAuth();
+document.getElementById('header').innerHTML=headerHtml('🤖 队列管理','queues');
+
+const longPressHandlers={
+  'queue':(el)=>{
+    const qn=el.dataset.queue;
+    showDeleteDialog('删除队列','确定要删除队列 "'+qn+'" 吗？所有相关 Agent 需要重新注册。',async()=>{
+      const agents=await fetch('/api/agents',{headers:headers()}).then(r=>r.json());
+      const related=(agents.agents||[]).filter(a=>getQueues(a).includes(qn));
+      await Promise.all(related.map(a=>fetch('/api/agent/delete',{method:'POST',headers:headers(),body:JSON.stringify({agentId:a.agentId})})));
+      const item=document.querySelector(`.queue-item[data-queue="${qn}"]`);
+      if(item){item.style.opacity='0';item.style.transform='translateX(-20px)';setTimeout(()=>item.remove(),300)}
+    });
+  },
+  'agent-queue':(el)=>{
+    const qn=el.dataset.queue, aid=el.dataset.agent;
+    showDeleteDialog('删除 Agent 连接','确定要删除 Agent "'+aid+'" 与队列 "'+qn+'" 的连接吗？',async()=>{
+      const agents=await fetch('/api/agents',{headers:headers()}).then(r=>r.json());
+      const agent=(agents.agents||[]).find(a=>a.agentId===aid);
+      if(agent){const nq=agent.queues.filter(q=>q!==qn);await fetch('/api/agent/register',{method:'POST',headers:headers(),body:JSON.stringify({...agent,queues:nq})})}
+      document.querySelectorAll(`[data-queue="${qn}"][data-agent="${aid}"]`).forEach(e=>{e.style.opacity='0';setTimeout(()=>e.style.display='none',300)});
+    });
+  },
+  'arrow-queue':(el)=>longPressHandlers['agent-queue'](el),
+};
+
+async function loadData(){
+  try{
+    const[agents,queues]=await Promise.all([
+      fetch('/api/agents',{headers:headers()}).then(r=>r.ok?r.json():{agents:[]}).catch(()=>({agents:[]})),
+      fetch('/api/queues',{headers:headers()}).then(r=>r.ok?r.json():{queues:[]}).catch(()=>({queues:[]}))
+    ]);
+    const agentList=agents.agents||[], queueList=queues.queues||[];
+    let html='';
+    if(agentList.length===0){html='<div class="empty">暂未注册任何 Agent</div>'}
+    else if(queueList.length===0){html='<div class="empty">还没有队列</div>'}
+    else{
+      queueList.forEach(q=>{
+        const producers=agentList.filter(a=>(a.role==='producer'||a.role==='both')&&getQueues(a).includes(q.name));
+        const consumers=agentList.filter(a=>(a.role==='consumer'||a.role==='both')&&getQueues(a).includes(q.name));
+        if(producers.length>0||consumers.length>0){
+          const bClass=q.blocked?' blocked':'';
+          const eqn=escapeHtml(q.name);
+          html+='<div class="queue-item" data-queue="'+eqn+'">';
+          html+='<div class="queue-producers">';
+          producers.forEach(p=>{
+            html+='<div class="producer-row">';
+            html+='<span class="agent-name" data-queue="'+eqn+'" data-agent="'+escapeHtml(p.agentId)+'" onclick="blockAgentInQueue(this)" onmousedown="startLongPress(event,this,\'agent-queue\',longPressHandlers)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" oncontextmenu="return false">'+escapeHtml(p.name)+'</span>';
+            html+='<span class="agent-role">('+escapeHtml(p.role)+')</span>';
+            html+='<span class="arrow" data-queue="'+eqn+'" data-agent="'+escapeHtml(p.agentId)+'" onclick="blockAgentInQueue(this)" onmousedown="startLongPress(event,this,\'arrow-queue\',longPressHandlers)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" oncontextmenu="return false">→</span>';
+            html+='</div>';
+          });
+          html+='</div>';
+          html+='<div class="queue-center">';
+          html+='<span class="queue-name'+bClass+'" data-queue="'+eqn+'" onclick="toggleQueueBlock(this)" onmousedown="startLongPress(event,this,\'queue\',longPressHandlers)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" oncontextmenu="return false">'+eqn+'</span>';
+          html+='<span class="msg-count">'+(q.pending||0)+' 待处理</span>';
+          html+='</div>';
+          html+='<div class="queue-consumers">';
+          consumers.forEach(c=>{
+            html+='<div class="consumer-row">';
+            html+='<span class="arrow" data-queue="'+eqn+'" data-agent="'+escapeHtml(c.agentId)+'" onclick="blockAgentInQueue(this)" onmousedown="startLongPress(event,this,\'arrow-queue\',longPressHandlers)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" oncontextmenu="return false">→</span>';
+            html+='<span class="agent-name" data-queue="'+eqn+'" data-agent="'+escapeHtml(c.agentId)+'" onclick="blockAgentInQueue(this)" onmousedown="startLongPress(event,this,\'agent-queue\',longPressHandlers)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" oncontextmenu="return false">'+escapeHtml(c.name)+'</span>';
+            html+='<span class="agent-role">('+escapeHtml(c.role)+')</span>';
+            html+='</div>';
+          });
+          html+='</div></div>';
+        }
+      });
+      if(!html)html='<div class="empty">没有活跃的连接</div>';
+    }
+    document.getElementById('queue-flow').innerHTML=html;
+  }catch(e){console.error('加载失败',e)}
+}
+
+async function toggleQueueBlock(el){
+  event.stopPropagation();
+  const qn=el.dataset.queue;
+  const isBlocked=el.classList.contains('blocked');
+  const url=isBlocked?'/api/queues/unblock':'/api/queues/block';
+  document.querySelectorAll(`.queue-name[data-queue="${qn}"]`).forEach(e=>{if(isBlocked)e.classList.remove('blocked');else e.classList.add('blocked')});
+  const res=await fetch(url,{method:'POST',headers:headers(),body:JSON.stringify({queue:qn})});
+  const data=await res.json();
+  if(!data.ok&&!data.success){alert('错误: '+(data.error||data.message));loadData();}
+}
+
+async function blockAgentInQueue(el){
+  event.stopPropagation();
+  const qn=el.dataset.queue, aid=el.dataset.agent;
+  const allEls=document.querySelectorAll(`[data-queue="${qn}"][data-agent="${aid}"]`);
+  const isBlocked=el.classList.contains('blocked');
+  allEls.forEach(e=>{if(isBlocked)e.classList.remove('blocked');else e.classList.add('blocked')});
+  const agents=await fetch('/api/agents',{headers:headers()}).then(r=>r.json());
+  const agent=(agents.agents||[]).find(a=>a.agentId===aid);
+  if(agent){
+    let nq;
+    if(isBlocked){nq=[...agent.queues];if(!nq.includes(qn))nq.push(qn)}
+    else{nq=agent.queues.filter(q=>q!==qn)}
+    if(JSON.stringify(nq)!==JSON.stringify(agent.queues)){
+      await fetch('/api/agent/register',{method:'POST',headers:headers(),body:JSON.stringify({...agent,queues:nq})});
+    }
+  }
+}
+
+loadData();
+initAutoRefresh(loadData);
+</script>
+</body>
+</html>

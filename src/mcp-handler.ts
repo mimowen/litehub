@@ -1,4 +1,4 @@
-// src/mcp-handler.ts — MCP SDK 集成（异步 core/ 函数）
+// src/mcp-handler.ts — MCP SDK 集成（异步 core / 函数）
 // 使用官方 @modelcontextprotocol/sdk，所有 tool callback 通过闭包获取 DbClient
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -14,7 +14,7 @@ import * as acp from "./core/acp.js";
 const streamableTransports = new Map<string, WebStandardStreamableHTTPServerTransport>();
 const sessionServers = new Map<string, McpServer>();
 
-function createMcpServer(db: DbClient): McpServer {
+export function createMcpServer(getDb: () => Promise<DbClient>): McpServer {
   const server = new McpServer(
     { name: "LiteHub", version: "2.0.0" },
     { capabilities: { tools: {}, resources: {} } },
@@ -34,6 +34,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ agentId, name, role, queues, pollInterval }) => {
       try {
+        const db = await getDb();
         const result = await queue.registerAgent(db, { agentId, name, role, queues, pollInterval });
         return { content: [{ type: "text", text: `Agent registered successfully:\n${JSON.stringify(result, null, 2)}` }] };
       } catch (error: any) {
@@ -54,6 +55,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ agentId, queue: queueName, data, contentType, metadata }) => {
       try {
+        const db = await getDb();
         const pointer = await queue.produce(db, queueName, String(data), agentId, { contentType, metadata });
         if (!pointer) {
           return { content: [{ type: "text", text: `Queue '${queueName}' does not exist. Register first or use a queue created by another agent.` }], isError: true };
@@ -76,6 +78,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ agentId, queue: queueName, maxItems, loopDetection }) => {
       try {
+        const db = await getDb();
         const items = await queue.consume(db, queueName, agentId, maxItems || 1, { loopDetection: loopDetection !== false });
         if (!items || items.length === 0) {
           return { content: [{ type: "text", text: `Queue '${queueName}' is empty. No data to consume.` }] };
@@ -100,6 +103,7 @@ function createMcpServer(db: DbClient): McpServer {
     { queue: z.string().describe("Queue name to peek") },
     async ({ queue: queueName }) => {
       try {
+        const db = await getDb();
         const pointer = await queue.peek(db, queueName);
         if (!pointer) {
           return { content: [{ type: "text", text: `Queue '${queueName}' is empty or does not exist.` }] };
@@ -124,6 +128,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ agentId, sourceQueue, targetQueue, data, contentType, metadata }) => {
       try {
+        const db = await getDb();
         // consume + produce (API-compatible pipe)
         const consumed = await queue.consume(db, sourceQueue, agentId, 1);
         if (!consumed || consumed.length === 0) {
@@ -160,6 +165,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ name, description, guidelines, maxMembers }) => {
       try {
+        const db = await getDb();
         const p = await pool.createPool(db, name, description, guidelines, maxMembers);
         return { content: [{ type: "text", text: `Pool created successfully:\nName: ${p.name}\nDescription: ${p.description || "N/A"}\nMax Members: ${p.maxMembers}` }] };
       } catch (error: any) {
@@ -177,6 +183,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ pool: poolName, agentId }) => {
       try {
+        const db = await getDb();
         const result = await pool.joinPool(db, poolName, agentId);
         if (!result.ok) {
           return { content: [{ type: "text", text: `Failed to join pool: ${result.error}` }], isError: true };
@@ -200,6 +207,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ pool: poolName, agentId }) => {
       try {
+        const db = await getDb();
         await pool.leavePool(db, poolName, agentId);
         return { content: [{ type: "text", text: `Agent '${agentId}' left pool '${poolName}'` }] };
       } catch (error: any) {
@@ -221,6 +229,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ pool: poolName, agentId, content, replyTo, tags, metadata }) => {
       try {
+        const db = await getDb();
         const msg = await pool.speak(db, poolName, agentId, content, { replyTo, tags, metadata });
         if ("error" in msg) {
           return { content: [{ type: "text", text: `${msg.error}` }], isError: true };
@@ -243,14 +252,18 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ pool: poolName, since, tag, limit }) => {
       try {
-        const result = await pool.getMessages(db, poolName, { since, tag, limit });
+        const db = await getDb();
+        const result = await pool.getMessages(db, poolName, undefined, { since, tag, limit });
+        if ("error" in result) {
+          return { content: [{ type: "text", text: `Failed: ${result.error}` }], isError: true };
+        }
         if (!result.messages || result.messages.length === 0) {
           return { content: [{ type: "text", text: `No messages found in pool '${poolName}'.` }] };
         }
         return {
           content: [{
             type: "text",
-            text: `Retrieved ${result.messages.length} message(s) from pool '${poolName}':\n\n${result.messages.map((msg, idx) =>
+            text: `Retrieved ${result.messages.length} message(s) from pool '${poolName}':\n\n${result.messages.map((msg: any, idx: number) =>
               `--- Message ${idx + 1} ---\nID: ${msg.id}\nFrom: ${msg.agentId}\nTime: ${msg.createdAt}\nContent: ${msg.content.substring(0, 150)}${msg.content.length > 150 ? "..." : ""}`,
             ).join("\n\n")}${result.guidelines ? `\n\nPool Guidelines:\n${result.guidelines}` : ""}`,
           }],
@@ -265,6 +278,7 @@ function createMcpServer(db: DbClient): McpServer {
 
   server.tool("litehub_agents", "List all registered agents in the system", {}, async () => {
     try {
+      const db = await getDb();
       const agents = await queue.listAgents(db);
       return {
         content: [{
@@ -279,6 +293,7 @@ function createMcpServer(db: DbClient): McpServer {
 
   server.tool("litehub_queues", "List all queues with their statistics (pending/consumed counts)", {}, async () => {
     try {
+      const db = await getDb();
       const queues = await queue.listQueues(db);
       return {
         content: [{
@@ -293,6 +308,7 @@ function createMcpServer(db: DbClient): McpServer {
 
   server.tool("litehub_pools", "List all collaboration pools with member counts", {}, async () => {
     try {
+      const db = await getDb();
       const pools = await pool.listPools(db);
       return {
         content: [{
@@ -311,6 +327,7 @@ function createMcpServer(db: DbClient): McpServer {
     { agentId: z.string().describe("Agent ID to filter resources by") },
     async ({ agentId }) => {
       try {
+        const db = await getDb();
         if (!(await queue.ensureAgent(db, agentId))) {
           return { content: [{ type: "text", text: `Agent '${agentId}' not registered.` }], isError: true };
         }
@@ -341,6 +358,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ agentId, targetAgentId, name, input }) => {
       try {
+        const db = await getDb();
         const result = await a2a.createTask(db, { agentId, targetAgentId, name, input });
         if (!result.ok) return { content: [{ type: "text", text: `Failed: ${result.error}` }], isError: true };
         return { content: [{ type: "text", text: `A2A Task created:\nTask ID: ${result.taskId}\nQueue: ${result.queue}` }] };
@@ -356,6 +374,7 @@ function createMcpServer(db: DbClient): McpServer {
     { taskId: z.string().describe("Task ID") },
     async ({ taskId }) => {
       try {
+        const db = await getDb();
         const task = await a2a.getTask(db, taskId);
         if (!task) return { content: [{ type: "text", text: `Task '${taskId}' not found.` }], isError: true };
         return { content: [{ type: "text", text: JSON.stringify(task, null, 2) }] };
@@ -374,6 +393,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ agentId, status }) => {
       try {
+        const db = await getDb();
         const tasks = await a2a.listTasks(db, { agentId, status });
         return { content: [{ type: "text", text: `A2A Tasks (${tasks.length}):\n\n${tasks.map(t => `- ${t.taskId}: ${t.name} [${t.status}]`).join("\n") || "No tasks"}` }] };
       } catch (error: any) {
@@ -391,6 +411,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ taskId, agentId }) => {
       try {
+        const db = await getDb();
         const result = await a2a.cancelTask(db, taskId, agentId);
         return { content: [{ type: "text", text: `Task cancelled: ${result.cancelled} task(s) affected` }] };
       } catch (error: any) {
@@ -409,6 +430,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ taskId, agentId, status }) => {
       try {
+        const db = await getDb();
         const result = await a2a.updateTask(db, taskId, agentId, status);
         if (!result.ok) return { content: [{ type: "text", text: `Failed: ${result.error}` }], isError: true };
         return { content: [{ type: "text", text: `Task updated: ${result.updated} task(s) affected` }] };
@@ -429,6 +451,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ agentId, webhookUrl, taskId, secret }) => {
       try {
+        const db = await getDb();
         const result = await a2a.setPushNotification(db, { agentId, webhookUrl, taskId, secret });
         return { content: [{ type: "text", text: result.message }] };
       } catch (error: any) {
@@ -443,6 +466,7 @@ function createMcpServer(db: DbClient): McpServer {
     { agentId: z.string().describe("Agent ID") },
     async ({ agentId }) => {
       try {
+        const db = await getDb();
         const subs = await a2a.getPushNotification(db, agentId);
         return { content: [{ type: "text", text: `Push subscriptions for '${agentId}':\n${JSON.stringify(subs, null, 2)}` }] };
       } catch (error: any) {
@@ -463,6 +487,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ taskId, agentId, message, messageId, metadata }) => {
       try {
+        const db = await getDb();
         const result = await a2a.sendToTask(db, { taskId, agentId, message, messageId, metadata });
         if (!result.ok) return { content: [{ type: "text", text: `Failed: ${result.error}` }], isError: true };
         return { content: [{ type: "text", text: `Message sent to task '${taskId}'. Pointer ID: ${result.pointerId}` }] };
@@ -478,6 +503,7 @@ function createMcpServer(db: DbClient): McpServer {
     { taskId: z.string().describe("Task ID to subscribe to") },
     async ({ taskId }) => {
       try {
+        const db = await getDb();
         const task = await a2a.getTask(db, taskId);
         if (!task) return { content: [{ type: "text", text: `Task '${taskId}' not found` }], isError: true };
         return {
@@ -504,6 +530,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ agentId, name, guidelines }) => {
       try {
+        const db = await getDb();
         const result = await acp.createRun(db, { agentId, name, guidelines });
         if (!result.ok) return { content: [{ type: "text", text: `Failed: ${result.error}` }], isError: true };
         return { content: [{ type: "text", text: `ACP Run created:\nRun ID: ${result.runId}` }] };
@@ -519,6 +546,7 @@ function createMcpServer(db: DbClient): McpServer {
     { runId: z.string().describe("Run ID") },
     async ({ runId }) => {
       try {
+        const db = await getDb();
         const run = await acp.getRun(db, runId);
         if (!run) return { content: [{ type: "text", text: `Run '${runId}' not found.` }], isError: true };
         return { content: [{ type: "text", text: JSON.stringify(run, null, 2) }] };
@@ -534,6 +562,7 @@ function createMcpServer(db: DbClient): McpServer {
     { agentId: z.string().optional().describe("Filter by agent ID") },
     async ({ agentId }) => {
       try {
+        const db = await getDb();
         const runs = await acp.listRuns(db, { agentId });
         return { content: [{ type: "text", text: `ACP Runs (${runs.length}):\n\n${runs.map(r => `- ${r.runId}: ${r.description || ""} [${r.status || "active"}]`).join("\n") || "No runs"}` }] };
       } catch (error: any) {
@@ -551,6 +580,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ runId, agentId }) => {
       try {
+        const db = await getDb();
         const result = await acp.cancelRun(db, runId, agentId);
         return { content: [{ type: "text", text: `Run cancelled: ${result.cancelled} run(s) affected` }] };
       } catch (error: any) {
@@ -569,6 +599,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ agentId, name, guidelines }) => {
       try {
+        const db = await getDb();
         const result = await acp.createContext(db, { agentId, name, guidelines });
         if (!result.ok) return { content: [{ type: "text", text: `Failed: ${result.error}` }], isError: true };
         return { content: [{ type: "text", text: `ACP Context created:\nContext ID: ${result.contextId}` }] };
@@ -584,6 +615,7 @@ function createMcpServer(db: DbClient): McpServer {
     { contextId: z.string().describe("Context ID") },
     async ({ contextId }) => {
       try {
+        const db = await getDb();
         const ctx = await acp.getContext(db, contextId);
         if (!ctx) return { content: [{ type: "text", text: `Context '${contextId}' not found.` }], isError: true };
         return { content: [{ type: "text", text: JSON.stringify(ctx, null, 2) }] };
@@ -602,6 +634,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ contextId, agentId }) => {
       try {
+        const db = await getDb();
         const result = await acp.joinContext(db, contextId, agentId);
         if (!result.ok) return { content: [{ type: "text", text: `Failed: ${result.error}` }], isError: true };
         return { content: [{ type: "text", text: `Agent '${agentId}' joined context '${contextId}'` }] };
@@ -620,6 +653,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ contextId, agentId }) => {
       try {
+        const db = await getDb();
         const result = await acp.leaveContext(db, contextId, agentId);
         if (!result.ok) return { content: [{ type: "text", text: `Failed: ${result.error}` }], isError: true };
         return { content: [{ type: "text", text: `Agent '${agentId}' left context '${contextId}'` }] };
@@ -641,6 +675,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ contextId, agentId, content, replyTo, tags }) => {
       try {
+        const db = await getDb();
         const result = await acp.speakContext(db, contextId, agentId, content, { replyTo, tags });
         if (!result.ok) return { content: [{ type: "text", text: `Failed: ${result.error}` }], isError: true };
         return { content: [{ type: "text", text: `Message sent in context '${contextId}':\nMessage ID: ${result.id}` }] };
@@ -658,6 +693,7 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ limit }) => {
       try {
+        const db = await getDb();
         const contexts = await acp.listContexts(db, { limit });
         return { content: [{ type: "text", text: `ACP Contexts (${contexts.length}):\n\n${contexts.map(c => `- ${c.contextId}: ${c.name || "N/A"} [Members: ${c.members?.length || 0}]`).join("\n") || "No contexts"}` }] };
       } catch (error: any) {
@@ -675,14 +711,18 @@ function createMcpServer(db: DbClient): McpServer {
     },
     async ({ contextId, limit }) => {
       try {
+        const db = await getDb();
         const result = await acp.getContextMessages(db, contextId, { limit });
+        if ("error" in result) {
+          return { content: [{ type: "text", text: `Failed: ${result.error}` }], isError: true };
+        }
         if (!result.messages || result.messages.length === 0) {
           return { content: [{ type: "text", text: `No messages found in context '${contextId}'.` }] };
         }
         return {
           content: [{
             type: "text",
-            text: `Retrieved ${result.messages.length} message(s) from context '${contextId}':\n\n${result.messages.map((msg, idx) =>
+            text: `Retrieved ${result.messages.length} message(s) from context '${contextId}':\n\n${result.messages.map((msg: any, idx: number) =>
               `--- Message ${idx + 1} ---\nID: ${msg.id}\nFrom: ${msg.agentId}\nTime: ${msg.createdAt}\nContent: ${msg.content.substring(0, 150)}${msg.content.length > 150 ? "..." : ""}`,
             ).join("\n\n")}`,
           }],
@@ -699,7 +739,9 @@ function createMcpServer(db: DbClient): McpServer {
 // ─── Transport Handlers ─────────────────────────────────────────────────
 
 export async function handleStreamableHTTP(c: Context) {
-  const db = (c as any).get("db") as DbClient;
+  // Get the lazy getDb function from locals (or fall back to c.get for compatibility)
+  const getDb: (() => Promise<DbClient>) = (c as any).locals?.getDb || (async () => (c as any).get("db") as DbClient);
+  
   const req = c.req.raw;
   const sessionId = req.headers.get("mcp-session-id");
 
@@ -721,7 +763,7 @@ export async function handleStreamableHTTP(c: Context) {
         sessionServers.delete(sid);
       },
     });
-    server = createMcpServer(db);
+    server = createMcpServer(getDb);
     await server.connect(transport);
   } else {
     return c.json({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request" }, id: null }, 400);

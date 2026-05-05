@@ -171,9 +171,12 @@ describe("speakContext / getContextMessages", () => {
     expect(result.ok).toBe(true);
     expect(result.id).toBeDefined();
 
-    const { messages } = await getContextMessages(db, ctxId);
-    expect(messages).toHaveLength(1);
-    expect(messages[0].content).toBe("Hello Context!");
+    const msgResult = await getContextMessages(db, ctxId);
+    expect("error" in msgResult).toBe(false);
+    if (!("error" in msgResult)) {
+      expect(msgResult.messages).toHaveLength(1);
+      expect(msgResult.messages[0].content).toBe("Hello Context!");
+    }
   });
 });
 

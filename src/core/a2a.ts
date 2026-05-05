@@ -52,8 +52,8 @@ export async function createTask(
     [realTaskId, name ?? "", JSON.stringify(input ?? {}), queueName, agentId],
   );
 
-  // Ensure the queue exists before producing
-  await ensureQueue(db, queueName, `A2A task: ${name || realTaskId}`, agentId);
+  // Ensure the queue exists before producing (mark as internal A2A type)
+  await ensureQueue(db, queueName, `A2A task: ${name || realTaskId}`, agentId, "a2a");
 
   const pointer = await produce(db, queueName, JSON.stringify({ taskId: realTaskId, name, input, messageId, metadata }), agentId);
 

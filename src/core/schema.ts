@@ -24,6 +24,8 @@ export const DDLs: string[] = [
     name TEXT PRIMARY KEY,
     description TEXT DEFAULT '',
     creator_id TEXT DEFAULT '',
+    type TEXT DEFAULT 'user',
+    blocked INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   )`,
 
@@ -42,6 +44,8 @@ export const DDLs: string[] = [
     guidelines TEXT DEFAULT 'You are a collaborative agent in this Pool. Share progress transparently. Reference others work. Do not command other agents.',
     max_members INTEGER DEFAULT 20,
     creator_id TEXT DEFAULT '',
+    type TEXT DEFAULT 'user',
+    blocked INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   )`,
 
@@ -116,7 +120,11 @@ export const DDLs: string[] = [
 export const ALTERS: string[] = [
   `ALTER TABLE pointers ADD COLUMN lineage TEXT DEFAULT '[]'`,
   `ALTER TABLE queues ADD COLUMN creator_id TEXT DEFAULT ''`,
+  `ALTER TABLE queues ADD COLUMN type TEXT DEFAULT 'user'`,
+  `ALTER TABLE queues ADD COLUMN blocked INTEGER DEFAULT 0`,
   `ALTER TABLE pools ADD COLUMN creator_id TEXT DEFAULT ''`,
+  `ALTER TABLE pools ADD COLUMN type TEXT DEFAULT 'user'`,
+  `ALTER TABLE pools ADD COLUMN blocked INTEGER DEFAULT 0`,
   `ALTER TABLE a2a_tasks ADD COLUMN description TEXT`,
   `ALTER TABLE a2a_tasks ADD COLUMN queue TEXT`,
   `ALTER TABLE a2a_tasks ADD COLUMN agent_id TEXT`,

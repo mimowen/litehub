@@ -1,6 +1,6 @@
 // src/handlers/queues.ts — Queue produce/consume/pipe/peek handlers
 import type { DbClient } from "../adapters/db/interface.js";
-import { ensureAgent, ensureQueue, getQueueStatus, listQueues, produce, consume, peek, getAgent } from "../core/queue.js";
+import { ensureAgent, ensureQueue, getQueueStatus, listQueues, produce, consume, peek, getAgent, updateQueueDescription, getQueueHistory, deleteAgent, blockQueue, unblockQueue } from "../core/queue.js";
 import { ok, fail } from "../utils/response.js";
 
 export async function handleProduce(db: DbClient, body: any) {
@@ -55,4 +55,45 @@ export async function handleQueueStatus(db: DbClient, name: string) {
   const status = await getQueueStatus(db, name);
   if (!status) return fail("Queue 不存在");
   return ok({ queue: status });
+}
+
+export async function handleQueueUpdate(db: DbClient, body: any) {
+  const { queue, name, description } = body;
+  const queueName = queue || name;
+  if (!queueName) return fail("缺少必填字段: queue/name");
+  const result = await updateQueueDescription(db, queueName, description || "");
+  if (!result) return fail("Queue 不存在");
+  return ok({ queue: result });
+}
+
+export async function handleQueueHistory(db: DbClient, queue: string, opts?: { status?: string; afterId?: string; limit?: number }) {
+  if (!queue) return fail("缺少 query: queue");
+  const result = await getQueueHistory(db, queue, opts);
+  return ok({ pointers: result.pointers, hasMore: result.hasMore });
+}
+
+export async function handleAgentDelete(db: DbClient, body: any) {
+  const { agentId } = body;
+  if (!agentId) return fail("缺少必填字段: agentId");
+  const result = await deleteAgent(db, agentId);
+  if (!result.success) return fail(result.message);
+  return ok({ message: result.message });
+}
+
+export async function handleQueueBlock(db: DbClient, body: any) {
+  const { queue, name } = body;
+  const queueName = queue || name;
+  if (!queueName) return fail("缺少必填字段: queue/name");
+  const result = await blockQueue(db, queueName);
+  if (!result.success) return fail(result.message);
+  return ok({ message: result.message });
+}
+
+export async function handleQueueUnblock(db: DbClient, body: any) {
+  const { queue, name } = body;
+  const queueName = queue || name;
+  if (!queueName) return fail("缺少必填字段: queue/name");
+  const result = await unblockQueue(db, queueName);
+  if (!result.success) return fail(result.message);
+  return ok({ message: result.message });
 }

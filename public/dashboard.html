@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiteHub — Dashboard</title>
+<link rel="stylesheet" href="/common.css">
+<style>.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.5rem;margin-top:1rem}</style>
+</head>
+<body>
+<div class="container">
+  <div id="header"></div>
+  <div class="stats" id="stats"><div class="empty">加载中...</div></div>
+</div>
+<div id="dialog-container"></div>
+<script src="/common.js"></script>
+<script>
+checkAuth();
+document.getElementById('header').innerHTML=headerHtml('🚀 LiteHub Dashboard','dashboard');
+
+async function loadData(){
+  try{
+    const[agents,queues,pools,tasks,runs]=await Promise.all([
+      fetch('/api/agents',{headers:headers()}).then(r=>r.ok?r.json():{agents:[]}).catch(()=>({agents:[]})),
+      fetch('/api/queues',{headers:headers()}).then(r=>r.ok?r.json():{queues:[]}).catch(()=>({queues:[]})),
+      fetch('/api/pools',{headers:headers()}).then(r=>r.ok?r.json():{pools:[]}).catch(()=>({pools:[]})),
+      fetch('/api/a2a/tasks',{headers:headers()}).then(r=>r.ok?r.json():{tasks:[]}).catch(()=>({tasks:[]})),
+      fetch('/api/acp/runs',{headers:headers()}).then(r=>r.ok?r.json():{runs:[]}).catch(()=>({runs:[]}))
+    ]);
+    const a=agents.agents||[], q=queues.queues||[], p=pools.pools||[], t=tasks.tasks||[], r=runs.runs||[];
+    const pendingTotal=q.reduce((s,x)=>s+(x.pending||0),0);
+    const blockedQ=q.filter(x=>x.blocked).length;
+    const blockedP=p.filter(x=>x.blocked).length;
+    const producers=a.filter(x=>x.role==='producer').length;
+    const consumers=a.filter(x=>x.role==='consumer').length;
+    const both=a.filter(x=>x.role==='both').length;
+
+    document.getElementById('stats').innerHTML=`
+      <a class="stat-card" href="/queues.html">
+        <div class="stat-icon">🤖</div>
+        <div class="stat-value">${a.length}</div>
+        <div class="stat-label">Agent</div>
+        <div class="stat-detail">${producers} 生产者 · ${consumers} 消费者 · ${both} 双向</div>
+      </a>
+      <a class="stat-card" href="/queues.html">
+        <div class="stat-icon">📬</div>
+        <div class="stat-value">${q.length}</div>
+        <div class="stat-label">Queue</div>
+        <div class="stat-detail">${pendingTotal} 待处理 · ${blockedQ} 已阻断</div>
+      </a>
+      <a class="stat-card" href="/pools.html">
+        <div class="stat-icon">🏊</div>
+        <div class="stat-value">${p.length}</div>
+        <div class="stat-label">Pool</div>
+        <div class="stat-detail">${p.reduce((s,x)=>s+(x.memberCount||0),0)} 成员 · ${blockedP} 已阻断</div>
+      </a>
+      <a class="stat-card" href="/a2a.html">
+        <div class="stat-icon">📋</div>
+        <div class="stat-value">${t.length}</div>
+        <div class="stat-label">A2A Task</div>
+        <div class="stat-detail">${t.filter(x=>x.status==='running').length} 运行中</div>
+      </a>
+      <a class="stat-card" href="/acp.html">
+        <div class="stat-icon">⚡</div>
+        <div class="stat-value">${r.length}</div>
+        <div class="stat-label">ACP Run</div>
+        <div class="stat-detail">${r.filter(x=>x.status==='running').length} 运行中</div>
+      </a>
+    `;
+  }catch(e){console.error('加载失败',e)}
+}
+loadData();
+initAutoRefresh(loadData);
+</script>
+</body>
+</html>

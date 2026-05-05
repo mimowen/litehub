@@ -35,6 +35,32 @@ describe("createPool", () => {
     expect(pool.guidelines).toBe("guidelines");
     expect(pool.maxMembers).toBe(5);
   });
+
+  it("auto-joins creator as member when creatorId is provided", async () => {
+    const agentId = uniq("a");
+    await registerAgent(db, { agentId, name: "A1", role: "both", queues: [] });
+    const poolName = uniq("pool");
+    await createPool(db, poolName, "desc", undefined, undefined, agentId);
+    const pool = await getPool(db, poolName);
+    expect(pool).not.toBeNull();
+    if (pool) {
+      expect(pool.memberCount).toBe(1);
+      expect(pool.creatorId).toBe(agentId);
+    }
+    const members = await listMembers(db, poolName);
+    expect(members).toHaveLength(1);
+    expect(members[0].agentId).toBe(agentId);
+  });
+
+  it("does not auto-join when no creatorId", async () => {
+    const poolName = uniq("pool");
+    await createPool(db, poolName);
+    const pool = await getPool(db, poolName);
+    expect(pool).not.toBeNull();
+    if (pool) {
+      expect(pool.memberCount).toBe(0);
+    }
+  });
 });
 
 describe("getPool / listPools", () => {
@@ -107,8 +133,75 @@ describe("speak / getMessages", () => {
     await speak(db, poolName, agentId, "Msg 1");
     await speak(db, poolName, agentId, "Msg 2");
     const result = await getMessages(db, poolName);
-    expect(result.messages).toHaveLength(2);
-    expect(result.messages[0].content).toBe("Msg 1");
-    expect(result.messages[1].content).toBe("Msg 2");
+    expect("error" in result).toBe(false);
+    if (!("error" in result)) {
+      expect(result.messages).toHaveLength(2);
+      expect(result.messages[0].content).toBe("Msg 1");
+      expect(result.messages[1].content).toBe("Msg 2");
+    }
+  });
+
+  it("rejects speaking to non-existent pool", async () => {
+    const agentId = uniq("a");
+    await registerAgent(db, { agentId, name: "A1", role: "both", queues: [] });
+    const msg = await speak(db, "non-existent-pool", agentId, "Hello!");
+    expect("error" in msg).toBe(true);
+    if ("error" in msg) {
+      expect(msg.error).toContain("not found");
+    }
+  });
+
+  it("rejects speaking by non-member agent", async () => {
+    const agentId1 = uniq("a1"), agentId2 = uniq("a2"), poolName = uniq("pool");
+    await registerAgent(db, { agentId: agentId1, name: "A1", role: "both", queues: [] });
+    await registerAgent(db, { agentId: agentId2, name: "A2", role: "both", queues: [] });
+    await createPool(db, poolName);
+    await joinPool(db, poolName, agentId1);
+    const msg = await speak(db, poolName, agentId2, "Hello!");
+    expect("error" in msg).toBe(true);
+    if ("error" in msg) {
+      expect(msg.error).toContain("not a member");
+    }
+  });
+
+  it("rejects reading by non-member agent", async () => {
+    const agentId1 = uniq("a1"), agentId2 = uniq("a2"), poolName = uniq("pool");
+    await registerAgent(db, { agentId: agentId1, name: "A1", role: "both", queues: [] });
+    await registerAgent(db, { agentId: agentId2, name: "A2", role: "both", queues: [] });
+    await createPool(db, poolName);
+    await joinPool(db, poolName, agentId1);
+    await speak(db, poolName, agentId1, "Hello!");
+    const result = await getMessages(db, poolName, agentId2);
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("not a member");
+    }
+  });
+
+  it("allows reading without agentId", async () => {
+    const agentId = uniq("a"), poolName = uniq("pool");
+    await registerAgent(db, { agentId, name: "A1", role: "both", queues: [] });
+    await createPool(db, poolName);
+    await joinPool(db, poolName, agentId);
+    await speak(db, poolName, agentId, "Hello!");
+    const result = await getMessages(db, poolName);
+    expect("error" in result).toBe(false);
+    if (!("error" in result)) {
+      expect(result.messages).toHaveLength(1);
+    }
+  });
+
+  it("rejects reading from blocked pool", async () => {
+    const agentId = uniq("a"), poolName = uniq("pool");
+    await registerAgent(db, { agentId, name: "A1", role: "both", queues: [] });
+    await createPool(db, poolName);
+    await joinPool(db, poolName, agentId);
+    await speak(db, poolName, agentId, "Hello!");
+    await db.execute("UPDATE pools SET blocked = 1 WHERE name = ?", [poolName]);
+    const result = await getMessages(db, poolName, agentId);
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("blocked");
+    }
   });
 });

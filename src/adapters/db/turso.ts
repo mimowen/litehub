@@ -1,10 +1,11 @@
 // src/adapters/db/turso.ts — Turso/libsql 实现（Vercel Edge / Serverless）
-import { createClient, type Client, type InValue } from "@libsql/client/http";
+import { createClient, type Client, type InValue } from "@libsql/client";
 import type { DbClient, DbResult } from "./interface.js";
 import { initSchemaAsync } from "../../core/schema.js";
 
 let _client: Client | null = null;
 let _schemaInitialized = false;
+let _initPromise: Promise<void> | null = null;
 
 export interface TursoConfig {
   url: string;
@@ -25,14 +26,23 @@ export async function getDbClient(config?: TursoConfig): Promise<DbClient> {
     });
   }
 
-  // Initialize schema on first use
-  if (!_schemaInitialized) {
-    const execute = async (sql: string, _args?: unknown[]) => {
-      const result = await _client!.execute({ sql, args: [] as InValue[] });
-      return { rowsAffected: result.rowsAffected };
-    };
-    await initSchemaAsync(execute);
-    _schemaInitialized = true;
+  // Initialize schema in background - don't block on first request
+  if (!_schemaInitialized && !_initPromise) {
+    _initPromise = (async () => {
+      try {
+        const execute = async (sql: string, args?: unknown[]) => {
+          const result = await _client!.execute({ sql, args: (args || []) as InValue[] });
+          return { rowsAffected: result.rowsAffected };
+        };
+        await initSchemaAsync(execute);
+        _schemaInitialized = true;
+        console.log('Schema initialized successfully');
+      } catch (error) {
+        console.error("Schema initialization failed:", error);
+        _initPromise = null;
+        // Don't throw - just log error and continue
+      }
+    })();
   }
 
   return {
@@ -44,9 +54,9 @@ export async function getDbClient(config?: TursoConfig): Promise<DbClient> {
       };
     },
     close() {
-      // Turso HTTP client 无需显式关闭
       _client = null;
       _schemaInitialized = false;
+      _initPromise = null;
     },
   };
 }
@@ -57,4 +67,5 @@ export async function getDbClient(config?: TursoConfig): Promise<DbClient> {
 export function resetDb(): void {
   _client = null;
   _schemaInitialized = false;
+  _initPromise = null;
 }

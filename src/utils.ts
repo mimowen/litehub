@@ -12,9 +12,9 @@ export function buildMcpDiscoveryConfig(baseUrl: string) {
   return {
     mcpServers: {
       litehub: {
-        url: `${baseUrl}/api/mcp/sse`,
-        transport: "sse",
-        description: "LiteHub — 轻量级 Agent 协作管道 (支持 SSE 和 Streamable HTTP)",
+        url: `${baseUrl}/mcp`,
+        transport: "streamableHttp",
+        description: "LiteHub — 轻量级 Agent 协作管道",
       },
     },
     tools: MCP_TOOLS.map((t) => ({ name: t.name, description: t.description })),
@@ -41,15 +41,15 @@ export function buildMcpDiscoveryConfig(baseUrl: string) {
       acpRunCreate: "POST /api/acp/runs",
       acpContexts: "GET /api/acp/contexts",
       acpContextCreate: "POST /api/acp/contexts",
-      mcpSSE: "GET|POST /api/mcp/sse",
+      mcp: "GET|POST /mcp",
     },
     auth: {
       type: "bearer",
       description: "设置环境变量 LITEHUB_TOKEN 后，请求需携带 Authorization: Bearer <token>",
     },
     transports: {
-      sse: "Server-Sent Events (传统方式，适合短连接)",
-      streamableHttp: "Streamable HTTP (推荐，更高效，Vercel 官方推荐)",
+      sse: "Server-Sent Events (传统方式)",
+      streamableHttp: "Streamable HTTP (推荐，更高效)",
     },
   };
 }

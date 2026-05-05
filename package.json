@@ -11,7 +11,8 @@
     "deploy:vercel:prod": "vercel --prod",
     "deploy:cf": "wrangler deploy",
     "deploy:docker": "docker build -t litehub . && docker run -d -p 3000:3000 -v litehub-data:/app/data litehub",
-    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiteHub — Pool 管理</title>
+<link rel="stylesheet" href="/common.css">
+<style>
+.pool-wrapper{position:relative;margin:1.5rem 0}
+.pool-label{display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem}
+.pool-title{font-weight:600;color:var(--cyan);font-size:.95rem;cursor:pointer;padding:.2rem .5rem;border-radius:4px;transition:all .2s}
+.pool-title:hover{background:rgba(56,189,248,.1)}
+.pool-title.blocked{color:var(--red);text-decoration:line-through}
+.pool-status{font-size:.75rem;color:var(--muted)}
+.pool-status.blocked{color:var(--red)}
+.pool-empty{color:var(--muted);font-size:.85rem;text-align:center;padding:1.5rem;position:relative;z-index:1}
+.pool-agents{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center;align-items:center;position:relative;z-index:1}
+.tip{font-size:.75rem;color:var(--muted);margin-top:.3rem}
+</style>
+</head>
+<body>
+<div class="container">
+  <div id="header"></div>
+  <p class="tip">💡 点击 Pool 名 = 阻断池子 | 点击 Agent = 阻断消息 | 长按 = 删除/移除</p>
+  <div id="pool-flow"><div class="empty">加载中...</div></div>
+</div>
+<div id="dialog-container"></div>
+<script src="/common.js"></script>
+<script>
+checkAuth();
+document.getElementById('header').innerHTML=headerHtml('🏊 Pool 管理','pools');
+
+const longPressHandlers={
+  'pool':(el)=>{
+    const pn=el.dataset.pool;
+    showDeleteDialog('删除 Pool','确定要删除 Pool "'+pn+'" 吗？所有成员将离开。',async()=>{
+      const members=await fetch('/api/pool/members?pool='+encodeURIComponent(pn),{headers:headers()}).then(r=>r.json());
+      await Promise.all((members.members||[]).map(m=>fetch('/api/pool/leave',{method:'POST',headers:headers(),body:JSON.stringify({pool:pn,agentId:m.agentId})})));
+      const w=document.querySelector(`.pool-wrapper[data-pool="${pn}"]`);
+      if(w){w.style.opacity='0';w.style.transform='translateX(-20px)';setTimeout(()=>w.remove(),300)}
+    });
+  },
+  'pool-agent':(el)=>{
+    const pn=el.dataset.pool, aid=el.dataset.agent;
+    showDeleteDialog('移除成员','确定要将 Agent "'+aid+'" 从 Pool "'+pn+'" 中移除吗？',async()=>{
+      await fetch('/api/pool/leave',{method:'POST',headers:headers(),body:JSON.stringify({pool:pn,agentId:aid})});
+      document.querySelectorAll(`.pool-agent[data-pool="${pn}"][data-agent="${aid}"]`).forEach(e=>{e.style.opacity='0';setTimeout(()=>e.remove(),300)});
+    });
+  },
+};
+
+async function loadData(){
+  try{
+    const[agents,pools]=await Promise.all([
+      fetch('/api/agents',{headers:headers()}).then(r=>r.ok?r.json():{agents:[]}).catch(()=>({agents:[]})),
+      fetch('/api/pools',{headers:headers()}).then(r=>r.ok?r.json():{pools:[]}).catch(()=>({pools:[]}))
+    ]);
+    const agentList=agents.agents||[], poolList=pools.pools||[];
+    let html='';
+    if(poolList.length===0){html='<div class="empty">还没有 Pool</div>'}
+    else{
+      poolList.forEach(pool=>{
+        const poolAgents=agentList.filter(a=>getPools(a).includes(pool.name));
+        const bClass=pool.blocked?' blocked':'';
+        const statusText=pool.blocked?'已阻断':'正常';
+        const en=escapeHtml(pool.name);
+        html+='<div class="pool-wrapper" data-pool="'+en+'">';
+        html+='<div class="pool-label">';
+        html+='<span class="pool-title'+bClass+'" data-pool="'+en+'" onclick="togglePoolBlock(this)" onmousedown="startLongPress(event,this,\'pool\',longPressHandlers)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" oncontextmenu="return false">🏊 '+en+'</span>';
+        html+='<span class="pool-status'+bClass+'" data-pool="'+en+'">'+statusText+' • '+poolAgents.length+'/'+pool.maxMembers+' 成员</span>';
+        html+='</div>';
+        html+='<div class="pool-container'+bClass+'" data-pool="'+en+'">';
+        if(poolAgents.length>0){
+          html+='<div class="pool-agents">';
+          poolAgents.forEach(a=>{
+            html+='<span class="pool-agent'+bClass+'" data-pool="'+en+'" data-agent="'+escapeHtml(a.agentId)+'" onclick="blockAgentInPool(this)" onmousedown="startLongPress(event,this,\'pool-agent\',longPressHandlers)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()" oncontextmenu="return false">'+escapeHtml(a.name)+'</span>';
+          });
+          html+='</div>';
+        }else{html+='<div class="pool-empty">(空池)</div>'}
+        html+='</div></div>';
+      });
+    }
+    document.getElementById('pool-flow').innerHTML=html;
+  }catch(e){console.error('加载失败',e)}
+}
+
+async function togglePoolBlock(el){
+  event.stopPropagation();
+  const pn=el.dataset.pool;
+  const isBlocked=el.classList.contains('blocked');
+  const url=isBlocked?'/api/pools/unblock':'/api/pools/block';
+  document.querySelectorAll(`[data-pool="${pn}"]`).forEach(e=>{if(isBlocked)e.classList.remove('blocked');else e.classList.add('blocked')});
+  const res=await fetch(url,{method:'POST',headers:headers(),body:JSON.stringify({pool:pn})});
+  const data=await res.json();
+  if(!data.ok&&!data.success){alert('错误: '+(data.error||data.message));loadData();}
+}
+
+async function blockAgentInPool(el){
+  event.stopPropagation();
+  const pn=el.dataset.pool, aid=el.dataset.agent;
+  const isBlocked=el.classList.contains('blocked');
+  el.classList.toggle('blocked');
+  const agents=await fetch('/api/agents',{headers:headers()}).then(r=>r.json());
+  const agent=(agents.agents||[]).find(a=>a.agentId===aid);
+  if(agent){
+    let np=agent.pools||[];
+    if(isBlocked){np=[...np];if(!np.includes(pn))np.push(pn)}
+    else{np=np.filter(p=>p!==pn)}
+    if(JSON.stringify(np)!==JSON.stringify(agent.pools)){
+      await fetch('/api/agent/register',{method:'POST',headers:headers(),body:JSON.stringify({...agent,pools:np})});
+    }
+  }
+}
+
+loadData();
+initAutoRefresh(loadData);
+</script>
+</body>
+</html>

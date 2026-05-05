@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiteHub — ACP 运行</title>
+<link rel="stylesheet" href="/common.css">
+<style>
+.run-item{padding:.8rem 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;transition:all .3s}
+.run-item:last-child{border-bottom:none}
+.run-info{flex:1}
+.run-name{color:var(--purple);font-weight:600;font-size:.95rem}
+.run-desc{color:var(--muted);font-size:.8rem;margin-top:.2rem}
+.run-meta{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.3rem}
+.tag{font-size:.7rem;padding:.15rem .5rem;border-radius:4px;border:1px solid}
+.tag.running{background:rgba(74,222,128,.1);color:var(--green);border-color:rgba(74,222,128,.2)}
+.tag.completed{background:rgba(148,163,184,.1);color:var(--muted);border-color:rgba(148,163,184,.2)}
+.tag.failed{background:rgba(239,68,68,.1);color:var(--red);border-color:rgba(239,68,68,.2)}
+.run-actions{display:flex;gap:.3rem;flex-shrink:0}
+.run-actions button{padding:.3rem .6rem;font-size:.75rem}
+</style>
+</head>
+<body>
+<div class="container">
+  <div id="header"></div>
+  <div id="run-list"><div class="empty">加载中...</div></div>
+</div>
+<div id="dialog-container"></div>
+<script src="/common.js"></script>
+<script>
+checkAuth();
+document.getElementById('header').innerHTML=headerHtml('⚡ ACP 运行','acp');
+
+async function loadData(){
+  try{
+    const runs=await fetch('/api/acp/runs',{headers:headers()}).then(r=>r.ok?r.json():{runs:[]}).catch(()=>({runs:[]}));
+    const list=runs.runs||[];
+    if(list.length===0){document.getElementById('run-list').innerHTML='<div class="empty">暂无 ACP Run</div>';return}
+    let html='';
+    list.forEach(r=>{
+      const status=r.status||'pending';
+      html+=`<div class="run-item" data-run-id="${escapeHtml(r.runId||r.id||'')}">
+        <div class="run-info">
+          <div class="run-name">${escapeHtml(r.name||r.runId||'Run')}</div>
+          ${r.description?`<div class="run-desc">${escapeHtml(r.description)}</div>`:''}
+          <div class="run-meta">
+            <span class="tag ${status}">${escapeHtml(status)}</span>
+            ${r.agentId?`<span class="tag">by ${escapeHtml(r.agentId)}</span>`:''}
+          </div>
+        </div>
+        <div class="run-actions">
+          ${status==='running'?'<button onclick="cancelRun(this)">取消</button>':''}
+          <button class="btn-danger" onclick="deleteRun(this)">删除</button>
+        </div>
+      </div>`;
+    });
+    document.getElementById('run-list').innerHTML=html;
+  }catch(e){console.error('加载失败',e)}
+}
+
+async function cancelRun(el){
+  const item=el.closest('.run-item');
+  const runId=item?.dataset.runId;
+  if(!runId)return;
+  await fetch('/api/acp/run/cancel',{method:'POST',headers:headers(),body:JSON.stringify({runId})});
+  loadData();
+}
+
+async function deleteRun(el){
+  const item=el.closest('.run-item');
+  const runId=item?.dataset.runId;
+  if(!runId)return;
+  showDeleteDialog('删除 Run','确定要删除此 Run 吗？',async()=>{
+    item.style.opacity='0';item.style.transform='translateX(-20px)';setTimeout(()=>item.remove(),300);
+  });
+}
+
+loadData();
+initAutoRefresh(loadData);
+</script>
+</body>
+</html>

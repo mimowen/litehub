@@ -1,5 +1,6 @@
 // src/server.ts — Node.js / Bun 启动入口
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import baseApp from "./index.js";
 import { getDbClient } from "./adapters/db/sqlite.js";
@@ -9,6 +10,10 @@ import { mountMCPRoutes } from "./mcp-routes.js";
 // 创建包装 App，在最前面注入 DbClient
 const db = getDbClient();
 const app = new Hono<LiteHubEnv>();
+
+// 静态文件服务 (public/ 目录)
+app.use("/*", serveStatic({ root: "./public" }));
+
 app.use("*", async (c, next) => {
   c.set("db", db);
   await next();

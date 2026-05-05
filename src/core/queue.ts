@@ -11,6 +11,7 @@ export interface AgentInfo {
   name: string;
   role: string;
   queues: string[];
+  pools?: string[];
   pollInterval: number;
   registeredAt: string;
 }
@@ -66,7 +67,32 @@ export async function getAgent(db: DbClient, agentId: string): Promise<AgentInfo
 
 export async function listAgents(db: DbClient): Promise<AgentInfo[]> {
   const result = await db.execute("SELECT * FROM agents ORDER BY registered_at");
-  return result.rows.map(rowToAgent);
+  const agents = result.rows.map(rowToAgent);
+
+  // 获取每个 Agent 所属的 Pool
+  for (const agent of agents) {
+    const poolResult = await db.execute(
+      "SELECT pool FROM pool_members WHERE agent_id = ?",
+      [agent.agentId],
+    );
+    agent.pools = poolResult.rows.map((r) => r.pool as string);
+  }
+
+  return agents;
+}
+
+export async function deleteAgent(db: DbClient, agentId: string): Promise<{ success: boolean; message: string }> {
+  const agent = await getAgent(db, agentId);
+  if (!agent) {
+    return { success: false, message: "Agent not found" };
+  }
+  
+  await db.execute("DELETE FROM agents WHERE agent_id = ?", [agentId]);
+  
+  return { 
+    success: true, 
+    message: `Agent '${agentId}' has been unregistered. They need to register again to consume messages.` 
+  };
 }
 
 function rowToAgent(row: DbRow): AgentInfo {
@@ -92,12 +118,13 @@ export async function ensureQueue(
   name: string,
   description?: string,
   creatorId?: string,
+  type?: string,
 ): Promise<QueueStatus | null> {
   const existing = getOne(await db.execute("SELECT 1 FROM queues WHERE name = ?", [name]));
   if (!existing) {
     await db.execute(
-      "INSERT INTO queues (name, description, creator_id) VALUES (?, ?, ?)",
-      [name, description || "", creatorId || ""],
+      "INSERT INTO queues (name, description, creator_id, type) VALUES (?, ?, ?, ?)",
+      [name, description || "", creatorId || "", type || "user"],
     );
   }
   return getQueueStatus(db, name);
@@ -109,6 +136,8 @@ export interface QueueStatus {
   pending: number;
   consumed: number;
   creatorId?: string;
+  type?: string;
+  blocked?: boolean;
   createdAt: string;
 }
 
@@ -123,18 +152,52 @@ export async function getQueueStatus(db: DbClient, name: string): Promise<QueueS
     pending,
     consumed,
     creatorId: q.creator_id as string,
+    type: q.type as string,
+    blocked: (q.blocked as number) === 1,
     createdAt: q.created_at as string,
   };
 }
 
-export async function listQueues(db: DbClient): Promise<QueueStatus[]> {
-  const result = await db.execute("SELECT * FROM queues ORDER BY created_at");
+export async function listQueues(db: DbClient, options?: { includeInternal?: boolean }): Promise<QueueStatus[]> {
+  const includeInternal = options?.includeInternal || false;
+  const sql = includeInternal
+    ? "SELECT * FROM queues ORDER BY created_at"
+    : "SELECT * FROM queues WHERE type = 'user' OR type IS NULL ORDER BY created_at";
+  const result = await db.execute(sql);
   const queues: QueueStatus[] = [];
   for (const r of result.rows) {
     const status = await getQueueStatus(db, r.name as string);
     if (status) queues.push(status);
   }
   return queues;
+}
+
+export async function blockQueue(db: DbClient, name: string): Promise<{ success: boolean; message: string }> {
+  const queue = await getQueueStatus(db, name);
+  if (!queue) {
+    return { success: false, message: "Queue not found" };
+  }
+  
+  await db.execute("UPDATE queues SET blocked = 1 WHERE name = ?", [name]);
+  
+  return { 
+    success: true, 
+    message: `Queue '${name}' has been blocked. Consumers will not receive messages from this queue.` 
+  };
+}
+
+export async function unblockQueue(db: DbClient, name: string): Promise<{ success: boolean; message: string }> {
+  const queue = await getQueueStatus(db, name);
+  if (!queue) {
+    return { success: false, message: "Queue not found" };
+  }
+  
+  await db.execute("UPDATE queues SET blocked = 0 WHERE name = ?", [name]);
+  
+  return { 
+    success: true, 
+    message: `Queue '${name}' has been unblocked. Consumers can now receive messages.` 
+  };
 }
 
 // ─── Produce ──────────────────────────────────────────────────────────────
@@ -212,6 +275,21 @@ export async function consume(
   maxItems = 1,
   options?: ConsumeOptions,
 ): Promise<ConsumeResult[]> {
+  // Check if agent is registered
+  const agentExists = await ensureAgent(db, consumerId);
+  if (!agentExists) {
+    throw new Error(`Agent '${consumerId}' is not registered. Please register first using /api/agent/register`);
+  }
+  
+  // Check if queue is blocked
+  const queueStatus = await getQueueStatus(db, queueName);
+  if (!queueStatus) {
+    throw new Error(`Queue '${queueName}' does not exist`);
+  }
+  if (queueStatus.blocked) {
+    return [];
+  }
+  
   const loopDetection = options?.loopDetection !== false;
 
   const result = await db.execute(
@@ -307,4 +385,77 @@ export async function pipe(
   );
 
   return { id: newId, queue: targetQueue };
+}
+
+// ─── Update Queue Description ─────────────────────────────────────────────
+
+export async function updateQueueDescription(
+  db: DbClient,
+  name: string,
+  description: string,
+): Promise<QueueStatus | null> {
+  const exists = await queueExists(db, name);
+  if (!exists) return null;
+  await db.execute("UPDATE queues SET description = ? WHERE name = ?", [description, name]);
+  return getQueueStatus(db, name);
+}
+
+// ─── Queue History (all statuses) ─────────────────────────────────────────
+
+export interface HistoryPointer {
+  id: string;
+  queue: string;
+  status: 'pending' | 'consumed' | 'looped';
+  size: number;
+  producerId: string;
+  contentType: string;
+  metadata: Record<string, string>;
+  lineage: string[];
+  createdAt: string;
+  consumedAt?: string;
+}
+
+export interface QueueHistoryOptions {
+  status?: string;
+  afterId?: string;
+  limit?: number;
+}
+
+export async function getQueueHistory(
+  db: DbClient,
+  queueName: string,
+  options?: QueueHistoryOptions,
+): Promise<{ pointers: HistoryPointer[]; hasMore: boolean }> {
+  const limit = options?.limit || 50;
+  const limitPlusOne = limit + 1;
+  let sql = "SELECT * FROM pointers WHERE queue = ?";
+  const args: unknown[] = [queueName];
+
+  if (options?.status) {
+    sql += " AND status = ?";
+    args.push(options.status);
+  }
+  if (options?.afterId) {
+    sql += " AND created_at > (SELECT created_at FROM pointers WHERE id = ?)";
+    args.push(options.afterId);
+  }
+  sql += " ORDER BY created_at DESC LIMIT ?";
+  args.push(limitPlusOne);
+
+  const result = await db.execute(sql, args);
+  const hasMore = result.rows.length > limit;
+  const pointers = result.rows.slice(0, limit).map((row) => ({
+    id: row.id as string,
+    queue: row.queue as string,
+    status: row.status as 'pending' | 'consumed' | 'looped',
+    size: row.size as number,
+    producerId: row.producer_id as string,
+    contentType: (row.content_type as string) || "text/plain",
+    metadata: JSON.parse((row.metadata as string) || "{}"),
+    lineage: JSON.parse((row.lineage as string) || "[]"),
+    createdAt: row.created_at as string,
+    consumedAt: row.consumed_at as string || undefined,
+  })).reverse();
+
+  return { pointers, hasMore };
 }

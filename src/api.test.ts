@@ -4,8 +4,10 @@ import { Hono } from "hono";
 import app from "./index.js";
 import { getDbClient, resetDb } from "./adapters/db/sqlite.js";
 import type { DbClient } from "./adapters/db/interface.js";
+import type { LiteHubEnv } from "./types.js";
 
 process.env.LITEHUB_DB = ":memory:";
+process.env.LITEHUB_TOKEN = "";
 
 let db: DbClient;
 let uid = 0;
@@ -13,7 +15,7 @@ const uniq = (prefix: string) => `${prefix}-${++uid}-${Date.now()}`;
 
 // 创建测试环境的应用
 const createTestApp = () => {
-  const testApp = new Hono();
+  const testApp = new Hono<LiteHubEnv>();
   testApp.use("*", async (c, next) => {
     c.set("db", db);
     await next();
@@ -33,7 +35,7 @@ describe("API endpoints", () => {
       const testApp = createTestApp();
       const res = await testApp.request("/api");
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(true);
       expect(data.name).toBe("LiteHub");
       expect(data.endpoints).toHaveProperty("mcp");
@@ -43,7 +45,7 @@ describe("API endpoints", () => {
       const testApp = createTestApp();
       const res = await testApp.request("/api/agents");
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(true);
       expect(Array.isArray(data.agents)).toBe(true);
     });
@@ -52,7 +54,7 @@ describe("API endpoints", () => {
       const testApp = createTestApp();
       const res = await testApp.request("/api/queues");
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(true);
       expect(Array.isArray(data.queues)).toBe(true);
     });
@@ -61,7 +63,7 @@ describe("API endpoints", () => {
       const testApp = createTestApp();
       const res = await testApp.request("/api/pools");
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(true);
       expect(Array.isArray(data.pools)).toBe(true);
     });
@@ -75,10 +77,10 @@ describe("API endpoints", () => {
         }
       });
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data).toHaveProperty("mcpServers");
       expect(data.mcpServers).toHaveProperty("litehub");
-      expect(data.mcpServers.litehub.url).toBe("http://localhost:3000/api/mcp/sse");
+      expect(data.mcpServers.litehub.url).toBe("http://localhost:3000/mcp");
       expect(data).toHaveProperty("tools");
       expect(Array.isArray(data.tools)).toBe(true);
     });
@@ -92,7 +94,7 @@ describe("API endpoints", () => {
         }
       });
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.name).toBe("LiteHub");
       expect(data.capabilities).toHaveProperty("queue");
       expect(data.capabilities.queue.produce).toBe("https://localhost:3000/api/agent/produce");
@@ -116,7 +118,7 @@ describe("API endpoints", () => {
         })
       });
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(true);
       expect(data.agent.agentId).toBe(agentId);
     });
@@ -129,7 +131,7 @@ describe("API endpoints", () => {
         body: JSON.stringify({})
       });
       expect(res.status).toBe(400);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(false);
       expect(data.error).toContain("缺少必填字段");
     });
@@ -164,7 +166,7 @@ describe("API endpoints", () => {
         })
       });
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(true);
       expect(data.pointer).toHaveProperty("queue", queueName);
     });
@@ -212,7 +214,7 @@ describe("API endpoints", () => {
       // Peek
       const res = await testApp.request(`/api/peek?queue=${queueName}`);
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(true);
       expect(data.pointer).toBeDefined();
       expect(data.pointer).toHaveProperty("queue", queueName);
@@ -247,7 +249,7 @@ describe("API endpoints", () => {
         })
       });
       expect(createRes.status).toBe(200);
-      const createData = await createRes.json();
+      const createData = await createRes.json() as any;
       expect(createData.ok).toBe(true);
 
       // Join pool
@@ -268,7 +270,7 @@ describe("API endpoints", () => {
       const testApp = createTestApp();
       const listRes = await testApp.request("/api/a2a/tasks");
       expect(listRes.status).toBe(200);
-      const listData = await listRes.json();
+      const listData = await listRes.json() as any;
       expect(listData.ok).toBe(true);
       expect(Array.isArray(listData.tasks)).toBe(true);
     });
@@ -305,7 +307,7 @@ describe("API endpoints", () => {
       const testApp = createTestApp();
       const res = await testApp.request("/api/acp/runs");
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(true);
       expect(Array.isArray(data.runs)).toBe(true);
     });
@@ -314,7 +316,7 @@ describe("API endpoints", () => {
       const testApp = createTestApp();
       const res = await testApp.request("/api/acp/contexts");
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(true);
       expect(Array.isArray(data.contexts)).toBe(true);
     });
@@ -342,23 +344,6 @@ describe("API endpoints", () => {
     });
   });
 
-  describe("MCP endpoints (Edge fallback)", () => {
-    it("GET /mcp returns 501 (Edge fallback)", async () => {
-      const testApp = createTestApp();
-      const res = await testApp.request("/mcp");
-      expect(res.status).toBe(501);
-      const data = await res.json();
-      expect(data.ok).toBe(false);
-      expect(data.error).toContain("Node.js runtime");
-    });
-
-    it("POST /api/mcp/sse returns 501 (Edge fallback)", async () => {
-      const testApp = createTestApp();
-      const res = await testApp.request("/api/mcp/sse", { method: "POST" });
-      expect(res.status).toBe(501);
-    });
-  });
-
   describe("webhook test endpoint", () => {
     it("POST /api/webhook/test logs the payload", async () => {
       const testApp = createTestApp();
@@ -368,7 +353,7 @@ describe("API endpoints", () => {
         body: JSON.stringify({ test: "payload" })
       });
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(true);
       expect(data.received).toBe(true);
     });
@@ -377,31 +362,204 @@ describe("API endpoints", () => {
       const testApp = createTestApp();
       const res = await testApp.request("/api/webhook/test");
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json() as any;
       expect(data.ok).toBe(true);
       expect(Array.isArray(data.logs)).toBe(true);
     });
   });
 
-  describe("landing page", () => {
-    it("GET / returns HTML landing page", async () => {
+  describe("queue block/unblock", () => {
+    it("POST /api/queues/block blocks a queue", async () => {
       const testApp = createTestApp();
-      const res = await testApp.request("/");
+      await testApp.request("/api/agent/register", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "p1", name: "Producer", role: "producer", queues: ["test-q"] }),
+      });
+      const res = await testApp.request("/api/queues/block", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queue: "test-q" }),
+      });
       expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toContain("text/html");
-      const html = await res.text();
-      expect(html).toContain("LiteHub");
+      const data = await res.json() as any;
+      expect(data.ok).toBe(true);
+    });
+
+    it("POST /api/queues/unblock unblocks a queue", async () => {
+      const testApp = createTestApp();
+      await testApp.request("/api/agent/register", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "p1", name: "Producer", role: "producer", queues: ["test-q"] }),
+      });
+      await testApp.request("/api/queues/block", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queue: "test-q" }),
+      });
+      const res = await testApp.request("/api/queues/unblock", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queue: "test-q" }),
+      });
+      expect(res.status).toBe(200);
+      const data = await res.json() as any;
+      expect(data.ok).toBe(true);
+    });
+
+    it("blocked queue returns empty on consume", async () => {
+      const testApp = createTestApp();
+      await testApp.request("/api/agent/register", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "p1", name: "Producer", role: "producer", queues: ["bq"] }),
+      });
+      await testApp.request("/api/agent/register", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "c1", name: "Consumer", role: "consumer", queues: ["bq"] }),
+      });
+      await testApp.request("/api/agent/produce", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "p1", queue: "bq", data: "hello" }),
+      });
+      await testApp.request("/api/queues/block", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queue: "bq" }),
+      });
+      const res = await testApp.request("/api/agent/consume", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "c1", queue: "bq" }),
+      });
+      const data = await res.json() as any;
+      expect(data.ok).toBe(true);
+      expect(data.data).toBeUndefined();
     });
   });
 
-  describe("dashboard", () => {
-    it("GET /api/dashboard returns HTML dashboard", async () => {
+  describe("agent delete", () => {
+    it("POST /api/agent/delete removes an agent", async () => {
       const testApp = createTestApp();
-      const res = await testApp.request("/api/dashboard");
+      await testApp.request("/api/agent/register", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "del1", name: "ToDelete", role: "producer", queues: ["dq"] }),
+      });
+      const res = await testApp.request("/api/agent/delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "del1" }),
+      });
       expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toContain("text/html");
-      const html = await res.text();
-      expect(html).toContain("Dashboard");
+      const data = await res.json() as any;
+      expect(data.ok).toBe(true);
+    });
+
+    it("deleted agent cannot consume", async () => {
+      const testApp = createTestApp();
+      await testApp.request("/api/agent/register", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "del2", name: "ToDelete", role: "consumer", queues: ["dq2"] }),
+      });
+      await testApp.request("/api/agent/delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "del2" }),
+      });
+      const res = await testApp.request("/api/agent/consume", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "del2", queue: "dq2" }),
+      });
+      const data = await res.json() as any;
+      expect(data.ok).toBe(false);
+    });
+  });
+
+  describe("pool block/unblock", () => {
+    it("POST /api/pools/block blocks a pool", async () => {
+      const testApp = createTestApp();
+      await testApp.request("/api/pool/create", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: "bp", agentId: "a1" }),
+      });
+      const res = await testApp.request("/api/pools/block", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: "bp" }),
+      });
+      expect(res.status).toBe(200);
+      const data = await res.json() as any;
+      expect(data.ok).toBe(true);
+    });
+
+    it("POST /api/pools/unblock unblocks a pool", async () => {
+      const testApp = createTestApp();
+      await testApp.request("/api/pool/create", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: "ubp", agentId: "a1" }),
+      });
+      await testApp.request("/api/pools/block", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: "ubp" }),
+      });
+      const res = await testApp.request("/api/pools/unblock", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: "ubp" }),
+      });
+      expect(res.status).toBe(200);
+      const data = await res.json() as any;
+      expect(data.ok).toBe(true);
+    });
+
+    it("blocked pool is reflected in list", async () => {
+      const testApp = createTestApp();
+      await testApp.request("/api/pool/create", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: "bplist", agentId: "a1" }),
+      });
+      await testApp.request("/api/pools/block", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: "bplist" }),
+      });
+      const res = await testApp.request("/api/pools");
+      const data = await res.json() as any;
+      const pool = data.pools.find((p: any) => p.name === "bplist");
+      expect(pool.blocked).toBe(1);
+    });
+
+    it("pool block/unblock toggle persists correctly", async () => {
+      const testApp = createTestApp();
+      const poolName = uniq("toggle-pool");
+      await testApp.request("/api/pool/create", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: poolName, agentId: "a1" }),
+      });
+
+      // 初始状态：未阻断
+      let res = await testApp.request("/api/pools");
+      let data = await res.json() as any;
+      let pool = data.pools.find((p: any) => p.name === poolName);
+      expect(pool.blocked).toBe(0);
+
+      // 第一次阻断
+      await testApp.request("/api/pools/block", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: poolName }),
+      });
+      res = await testApp.request("/api/pools");
+      data = await res.json() as any;
+      pool = data.pools.find((p: any) => p.name === poolName);
+      expect(pool.blocked).toBe(1);
+
+      // 解阻断
+      await testApp.request("/api/pools/unblock", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: poolName }),
+      });
+      res = await testApp.request("/api/pools");
+      data = await res.json() as any;
+      pool = data.pools.find((p: any) => p.name === poolName);
+      expect(pool.blocked).toBe(0);
+
+      // 再次阻断
+      await testApp.request("/api/pools/block", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pool: poolName }),
+      });
+      res = await testApp.request("/api/pools");
+      data = await res.json() as any;
+      pool = data.pools.find((p: any) => p.name === poolName);
+      expect(pool.blocked).toBe(1);
     });
   });
 });

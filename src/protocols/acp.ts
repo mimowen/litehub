@@ -273,7 +273,7 @@ export async function acpGetContextMessages(
 ): Promise<ACPPaginatedResponse<ACPMessage>> {
   const limit = options?.limit || 50;
   const result = await getContextMessages(db, contextId, { limit });
-  const messages = result.messages || [];
+  const messages = "error" in result ? [] : result.messages || [];
   return {
     data: messages.map(formatMessage),
     pagination: { total: messages.length, limit, offset: 0 },
